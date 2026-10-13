@@ -696,6 +696,10 @@ class Engine(QObject):
         if self._xwindow:
             self.mp.set_xwindow(self._xwindow)
         self.mp.audio_set_volume(self._volume)
+        dev = self.store.get("audio_device")
+        self._device = "" if dev in (None, "", "System default") else dev
+        if self._device:
+            self.mp.audio_output_device_set(None, self._device)
         self._apply_eq()
 
     def set_window(self, winid):
@@ -1309,13 +1313,14 @@ class Engine(QObject):
         return out
 
     def audio_device(self):
-        try:
-            return _dec(self.mp.audio_output_device_get())
-        except Exception:
-            return ""
+        """The output picked in the app ("" = system default). libVLC only reports a new
+        device once the stream has moved over, so asking it right after a pick gave the old one."""
+        return self._device
 
     def set_audio_device(self, device):
-        self.mp.audio_output_device_set(None, device or "")
+        self._device = device or ""
+        self.mp.audio_output_device_set(None, self._device)
+        self.store.set("audio_device", self._device or "System default")
         self.tracksChanged.emit()
 
     def audio_delay(self):

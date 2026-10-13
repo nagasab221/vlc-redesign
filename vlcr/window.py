@@ -1502,7 +1502,8 @@ class MainWindow(QWidget):
         return [
             MenuItem("Audio Track", submenu=lambda: [MenuItem(n, lambda i=i: e.set_audio_track(i), checked=e.audio_track() == i)
                                                      for i, n in e.audio_tracks()] or [MenuItem("None", enabled=False)]),
-            MenuItem("Audio Device", submenu=lambda: [MenuItem("System default", lambda: e.set_audio_device(None))] +
+            MenuItem("Audio Device", submenu=lambda: [MenuItem("System default", lambda: e.set_audio_device(None),
+                                                               checked=e.audio_device() == "")] +
                      [MenuItem(desc, lambda d=d: e.set_audio_device(d), checked=e.audio_device() == d)
                       for d, desc in e.audio_devices()]),
             MenuItem("Stereo Mode", submenu=lambda: [MenuItem(m, lambda m=m: e.set_fx("stereo_mode", m),

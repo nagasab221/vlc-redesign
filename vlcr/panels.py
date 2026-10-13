@@ -299,7 +299,6 @@ class TracksPanel(Panel):
 
     def _pick_device(self, dev):
         self.engine.set_audio_device(dev)
-        self.store.set("audio_device", dev or "System default")
 
     def refresh(self):
         e = self.engine
