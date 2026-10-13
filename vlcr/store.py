@@ -72,7 +72,8 @@ STATE_DEFAULTS = {
     "global_hotkeys": {},  # action -> key sequence string
     "views": {},           # page key -> {"view": grid|list, "sort": ...}
     "mini_corner": "br",
-    "lib_size": "Large",   # library item size: Large | Medium | Small (every page and window)
+    "lib_size": "Large",
+    "home_hidden": [],     # titles of the home sections switched off   # library item size: Large | Medium | Small (every page and window)
 }
 
 RESUME_LIMIT = 500

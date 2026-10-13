@@ -1317,6 +1317,28 @@ class AboutDialog(Dialog):
         v.addLayout(row)
 
 
+class HomeDialog(Dialog):
+    """Customize Home: switch the home page's sections on and off (applies right away)."""
+
+    def __init__(self, lib):
+        super().__init__(lib.win, "Customize Home", 520, 120 + 52 * 5, save_text="Done")
+        from .library import HOME_SECTIONS
+        self.cancel.hide()
+        self.body_lay.addWidget(section("Sections", "With every section off, Home shows just the VLC logo."))
+        grid = QGridLayout()
+        grid.setVerticalSpacing(14)
+        hidden = set(lib.store["home_hidden"])
+        for row, title in enumerate(HOME_SECTIONS):
+            t = Toggle()
+            t.setChecked(title not in hidden)
+            t.toggled.connect(lambda on, title=title: lib.set_home_section(title, on))
+            grid.addWidget(Label(title, 14, "text_hi"), row, 0)
+            grid.addWidget(t, row, 1, Qt.AlignRight)
+        grid.setColumnStretch(0, 1)
+        self.body_lay.addLayout(grid)
+        self.body_lay.addStretch(1)
+
+
 class MessageDialog(Dialog):
     def __init__(self, win, title, text, detail="", ok="OK", cancel="Cancel"):
         super().__init__(win, title, 520, 220, save_text=ok, cancel_text=cancel)

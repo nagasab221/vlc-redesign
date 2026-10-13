@@ -1383,7 +1383,7 @@ class MainWindow(QWidget):
             if self.store.add_profile(name.strip()):
                 self.notify(f"Profile: {name.strip()}")
 
-    def open_context_menu(self, gpos):
+    def open_context_menu(self, gpos, extra=None):
         e = self.engine
         k = self.key_label
         active = e.is_active()
@@ -1430,6 +1430,8 @@ class MainWindow(QWidget):
                 MenuItem("Library", self.show_library_window, shortcut=k("home"))]),
             MenuItem("Quit VLC", self.quit, icon="quit", shortcut=k("quit")),
         ]
+        if extra:
+            items += [sep()] + extra
         PopupMenu(items, self, width=292).popup(gpos)
 
     def _playback_menu(self):

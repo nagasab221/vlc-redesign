@@ -29,6 +29,9 @@ from .theme import c
 from .widgets import HLine, IconButton, Label, MenuItem, PopupMenu, elide, sep, wants_list_key
 from .filedialog import FileDialog
 
+HOME_SECTIONS = ["Continue Watching", "Listen Again", "Frequently Visited Folders", "Frequently Visited Playlists",
+                 "Frequently Listened Artists"]
+
 SECTIONS = [
     ("home", "Home", "home"),
     ("videos", "Videos", "videos"),
@@ -170,7 +173,12 @@ class LibraryModel(QObject):
         return fn(loc) if fn else []
 
     def home_sections(self):
-        """[(title, location for "›", entries, style)], style is video | square | folder | list."""
+        """[(title, location for "›", entries, style)], style is video | square | folder | list.
+        Sections switched off in Customize Home are left out."""
+        hidden = set(self.store["home_hidden"])
+        return [s for s in self._home_sections() if s[0] not in hidden]
+
+    def _home_sections(self):
         out = []
         cw = [p for p in self.store.continue_watching(12)]
         if cw:
@@ -866,6 +874,19 @@ class Library(QObject):
     def page_key(self):
         return "/".join(str(x) for x in self.loc[:2])
 
+    def set_home_section(self, title, shown):
+        hidden = [t for t in self.store["home_hidden"] if t != title] + ([] if shown else [title])
+        self.store["home_hidden"] = hidden
+        self.locationChanged.emit()
+
+    def customize_home(self):
+        from .dialogs import HomeDialog
+        HomeDialog(self).exec_()
+
+    def home_menu(self, title=None):
+        items = [MenuItem(f"Hide “{title}”", lambda: self.set_home_section(title, False), icon="ui")] if title else []
+        return items + [MenuItem("Customize Home…", self.customize_home, icon="paint")]
+
     def size_name(self):
         name = self.store["lib_size"]
         return name if name in LIB_SIZES else "Large"
@@ -1141,6 +1162,8 @@ class Library(QObject):
         if loc[0] == "recent":
             menu.append(sep())
             menu.append(MenuItem("Clear Recent", self.store.clear_history))
+        if loc == ("home",):
+            menu = self.home_menu()
         return menu
 
     def _add_file(self, folder):
@@ -1617,6 +1640,7 @@ class HomeSection(QWidget):
     def __init__(self, lib, title, more_loc, entries, style):
         super().__init__()
         self.lib = lib
+        self.title = title
         v = QVBoxLayout(self)
         v.setContentsMargins(0, 20, 0, 0)
         v.setSpacing(0)
@@ -1645,6 +1669,32 @@ class HomeSection(QWidget):
         lib.media.infoReady.connect(view.repaint_items)
         v.addWidget(view)
         self.view = view
+
+    def contextMenuEvent(self, e):
+        # the title row (the cards have their own menus)
+        PopupMenu(self.lib.home_menu(self.title), self.lib.win).popup(e.globalPos())
+
+
+class HomePage(QWidget):
+    """The home page's background: right click gives the player's usual menu (open a file,
+    folder, stream…) plus Customize Home."""
+
+    def __init__(self, lib):
+        super().__init__()
+        self.lib = lib
+
+    def contextMenuEvent(self, e):
+        self.lib.win.open_context_menu(e.globalPos(), extra=self.lib.home_menu())
+
+
+class HomeLogo(HomePage):
+    """Every section switched off: just a big VLC cone."""
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        side = min(260, self.width() // 3, self.height() // 2)
+        pm = icons.pixmap("vlc", side)
+        p.drawPixmap((self.width() - side) // 2, (self.height() - side) // 2 - 20, pm)
 
 
 class LibraryContent(QWidget):
@@ -1726,11 +1776,21 @@ class LibraryContent(QWidget):
         self.view = None
         loc = lib.loc
         if loc == ("home",) and not lib.query:
-            inner = QWidget()
+            sections = lib.model.home_sections()
+            st = lib.store
+            empty_library = not (st["video_folders"] or st["music_folders"] or st["recent"] or st.playlists())
+            if not sections and not empty_library:
+                # everything switched off (or nothing to show yet): the big cone
+                self.body_lay.addWidget(HomeLogo(lib), 1)
+                self.count.setText("")
+                self.back.setEnabled(bool(lib.back_stack))
+                self.fwd.setEnabled(bool(lib.fwd_stack))
+                self.crumb.update()
+                return
+            inner = HomePage(lib)
             iv = QVBoxLayout(inner)
             iv.setContentsMargins(0, 0, 0, 30)
             iv.setSpacing(17)
-            sections = lib.model.home_sections()
             if not sections:
                 iv.addWidget(self._welcome())
             for title, more, entries, style in sections:
