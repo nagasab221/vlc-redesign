@@ -10,7 +10,7 @@ import os
 
 from PyQt5.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFontMetrics, QPainter, QPixmap
-from PyQt5.QtWidgets import QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QAbstractButton, QGridLayout, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from . import icons, theme
 from .engine import fmt_time, is_audio, is_url
@@ -497,6 +497,22 @@ class VolumeGroup(QWidget, Customizable):
         self.paint_custom_outline(p)
 
 
+class ConeButton(QAbstractButton):
+    """The VLC cone at the top left: takes you to the library's Home. Being a button, a click
+    on it isn't taken as a title-bar drag or double click."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedSize(38, 28)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("Home")
+        self.setFocusPolicy(Qt.NoFocus)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.drawPixmap((self.width() - 24) // 2, (self.height() - 24) // 2, icons.pixmap("vlc", 24))
+
+
 class TitleBar(Bar):
     """40 px: VLC cone, left zone, centred title zone, right zone (window buttons)."""
 
@@ -506,10 +522,8 @@ class TitleBar(Bar):
         self.setFixedHeight(40)
         self.widgets = []
         self._press = None
-        self.cone = QLabel(self)
-        self.cone.setFixedSize(38, 28)
-        self.cone.setAlignment(Qt.AlignCenter)
-        self.cone.setPixmap(icons.pixmap("vlc", 24))
+        self.cone = ConeButton(self)
+        self.cone.clicked.connect(actions.go_home)
         self.left = QHBoxLayout()
         self.center = QHBoxLayout()
         self.right = QHBoxLayout()
