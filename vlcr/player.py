@@ -63,18 +63,28 @@ class Surface(QFrame):
 
 
 class VideoFrame(Surface):
-    """Native child window that libVLC draws into (rounded with an X shape mask)."""
+    """Native child window that libVLC draws into (rounded with an X shape mask).
+
+    libVLC's OpenGL output renders straight into this window, so Qt must never paint it:
+    any Qt repaint (focus change, resize, palette change) would flash over the video.
+    While nothing plays, PlayerArea shows a plain black page instead.
+    """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_NativeWindow)
         self.setAttribute(Qt.WA_DontCreateNativeAncestors)
+        self.setAttribute(Qt.WA_PaintOnScreen)
         self.setAttribute(Qt.WA_OpaquePaintEvent)
+        self.setAttribute(Qt.WA_NoSystemBackground)
+        self.setAutoFillBackground(False)
         self.radius = 9
-        pal = self.palette()
-        pal.setColor(self.backgroundRole(), QColor("#000000"))
-        self.setPalette(pal)
-        self.setAutoFillBackground(True)
+
+    def paintEngine(self):
+        return None
+
+    def paintEvent(self, e):
+        pass
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -249,6 +259,18 @@ class OverlayWindow(QWidget):
             p.fillRect(QRect(0, 0, self.width(), 1), c("line"))
 
 
+class BlankView(Surface):
+    """Black, rounded area shown while nothing is playing."""
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), c("bar"))
+        path = QPainterPath()
+        path.addRoundedRect(QRectF(self.rect()), 9, 9)
+        p.fillPath(path, QColor("#000000"))
+
+
 class PlayerArea(QWidget):
     """Video (or music view) above the control bar."""
 
@@ -265,8 +287,11 @@ class PlayerArea(QWidget):
         self.stack = QStackedWidget()
         self.video = VideoFrame()
         self.music = MusicView(win)
+        self.blank = BlankView()
         self.stack.addWidget(self.video)
         self.stack.addWidget(self.music)
+        self.stack.addWidget(self.blank)
+        self.stack.setCurrentWidget(self.blank)
         self.frame_lay.addWidget(self.stack)
         v.addWidget(self.frame, 1)
         self.bar = ControlBar(win)

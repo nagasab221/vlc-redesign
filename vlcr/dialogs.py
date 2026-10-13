@@ -24,6 +24,7 @@ from .engine import (AUDIO_EXT, MEDIA_EXT, SUB_EXT, VIDEO_EXT, display_name, ext
 from .theme import c
 from .widgets import (Button, Dropdown, HLine, IconButton, Label, MenuItem, PopupMenu, Toggle, elide, paint_shadow,
                       scroll)
+from .filedialog import FileDialog
 
 
 
@@ -400,7 +401,7 @@ class AddSubtitlesDialog(Dialog):
         return subs
 
     def _choose_folder(self):
-        d = QFileDialog.getExistingDirectory(self, "Folder with the subtitle files", self.folder or os.path.expanduser("~"),
+        d = FileDialog.getExistingDirectory(self, "Folder with the subtitle files", self.folder or os.path.expanduser("~"),
                                              options=self.win.dialog_options())
         if d:
             self.folder = d
@@ -470,7 +471,7 @@ class AddSubtitlesDialog(Dialog):
         PopupMenu(items, self, width=420, row=40).popup(QCursorPos())
 
     def _pick_file(self, video):
-        path, _ = QFileDialog.getOpenFileName(self, "Subtitle file", self.folder or "", "Subtitles (*.srt *.ass *.ssa *.vtt *.sub)",
+        path, _ = FileDialog.getOpenFileName(self, "Subtitle file", self.folder or "", "Subtitles (*.srt *.ass *.ssa *.vtt *.sub)",
                                               options=self.win.dialog_options())
         if path:
             self._set_pair(video, path)
@@ -789,7 +790,7 @@ class DropZone(QWidget):
         self._add(files)
 
     def mouseReleaseEvent(self, e):
-        files, _ = QFileDialog.getOpenFileNames(self, "Select files", os.path.expanduser("~"),
+        files, _ = FileDialog.getOpenFileNames(self, "Select files", os.path.expanduser("~"),
                                                 "Media (" + " ".join(f"*.{x}" for x in sorted(MEDIA_EXT)) + ");;All files (*)",
                                                 options=self.window().parent().dialog_options() if self.window().parent() else
                                                 QFileDialog.Options())
@@ -847,7 +848,7 @@ class ThumbPicker(QWidget):
         self.setToolTip("Choose a thumbnail image")
 
     def mouseReleaseEvent(self, e):
-        path, _ = QFileDialog.getOpenFileName(self, "Thumbnail", os.path.expanduser("~/Pictures"),
+        path, _ = FileDialog.getOpenFileName(self, "Thumbnail", os.path.expanduser("~/Pictures"),
                                               "Images (*.png *.jpg *.jpeg *.webp *.bmp)")
         if path:
             self.path = path
@@ -1036,7 +1037,7 @@ class ConvertDialog(Dialog):
             self.status.setText("Converting needs ffmpeg (sudo apt install ffmpeg).")
 
     def _browse(self):
-        d = QFileDialog.getExistingDirectory(self, "Save converted files to", os.path.expanduser("~/Videos"),
+        d = FileDialog.getExistingDirectory(self, "Save converted files to", os.path.expanduser("~/Videos"),
                                              options=self.win.dialog_options())
         if d:
             self.dest.setText(d)

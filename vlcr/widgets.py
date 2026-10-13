@@ -235,6 +235,8 @@ class TimeLabel(QWidget, Customizable):
             self.edit.show()
             self.edit.setFocus()
             self.edit.selectAll()
+            # The video doesn't take keyboard focus, so "clicked elsewhere" has to be caught here.
+            QApplication.instance().installEventFilter(self)
             self.update()
 
     def _commit(self):
@@ -257,8 +259,29 @@ class TimeLabel(QWidget, Customizable):
         self.update()
 
     def _finish(self):
+        QApplication.instance().removeEventFilter(self)
         self.edit.hide()
         self.update()
+
+    def eventFilter(self, obj, ev):
+        if not self.edit.isVisible():
+            QApplication.instance().removeEventFilter(self)
+            return False
+        t = ev.type()
+        if t == QEvent.MouseButtonPress and obj is not self.edit and not (
+                isinstance(obj, QWidget) and self.edit.isAncestorOf(obj)):
+            if obj is self and self.rect().contains(self.mapFromGlobal(ev.globalPos())):
+                return False
+            self._finish()
+        elif t == QEvent.ShortcutOverride and obj is self.edit and ev.key() == Qt.Key_Escape:
+            ev.accept()          # Esc belongs to the box here, not to "leave fullscreen"
+            return True
+        elif t == QEvent.KeyPress and obj is self.edit and ev.key() == Qt.Key_Escape:
+            self._finish()
+            return True
+        elif t == QEvent.ApplicationDeactivate or (t == QEvent.WindowDeactivate and obj is self.window()):
+            self._finish()
+        return False
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -429,10 +452,12 @@ class ConeVolume(QWidget, Customizable):
         self.update()
 
     def _shape(self, r):
-        # left edge is ~30% of the height, right edge full height
+        # A cone on its side, like the design: narrow on the left, full height on the right,
+        # centred vertically so it lines up with the speaker icon.
         left_h = r.height() * 0.30
-        return QPolygonF([QPointF(r.left(), r.bottom() - left_h), QPointF(r.right(), r.top()),
-                          QPointF(r.right(), r.bottom()), QPointF(r.left(), r.bottom())])
+        cy = r.center().y()
+        return QPolygonF([QPointF(r.left(), cy - left_h / 2), QPointF(r.right(), r.top()),
+                          QPointF(r.right(), r.bottom()), QPointF(r.left(), cy + left_h / 2)])
 
     def _value_at(self, x):
         return int(round(max(0.0, min(1.0, x / self.width())) * self.maximum))
@@ -473,11 +498,12 @@ class ConeVolume(QWidget, Customizable):
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
-        r = QRectF(self.rect()).adjusted(0, 1, 0, -1)
+        r = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
         shape = self._shape(r)
-        p.setPen(Qt.NoPen)
+        p.setPen(QPen(c("field"), 3, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         p.setBrush(c("field"))
         p.drawPolygon(shape)
+        p.setPen(Qt.NoPen)
         frac = 0 if self.muted else max(0.0, min(1.0, self.value / 200.0))
         if frac > 0:
             inner = r.adjusted(2, 2, -2, -2)

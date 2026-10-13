@@ -4,10 +4,13 @@ import ctypes
 import json
 import os
 import sys
+import warnings
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, "vendor"))   # bundled python-vlc binding
 sys.path.insert(0, HERE)
+# The bundled python-vlc has docstrings Python 3.12 warns about the first time it compiles them.
+warnings.filterwarnings("ignore", category=SyntaxWarning)
 
 
 def tune_malloc():

@@ -27,6 +27,7 @@ from .engine import (AUDIO_EXT, MEDIA_EXT, VIDEO_EXT, display_name, ext, fmt_sho
                      natural_key)
 from .theme import c
 from .widgets import HLine, IconButton, Label, MenuItem, PopupMenu, elide, sep
+from .filedialog import FileDialog
 
 SECTIONS = [
     ("home", "Home", "home"),
@@ -911,7 +912,7 @@ class Library(QObject):
     def add_action(self, what, anchor):
         w = self.win
         if what in ("videos", "music"):
-            folder = QFileDialog.getExistingDirectory(w, f"Add a folder to {what.title()}", os.path.expanduser("~"),
+            folder = FileDialog.getExistingDirectory(w, f"Add a folder to {what.title()}", os.path.expanduser("~"),
                                                       options=w.dialog_options())
             if folder:
                 self.store.add_folder("music" if what == "music" else "video", folder)
@@ -1071,7 +1072,7 @@ class Library(QObject):
     def _add_file(self, folder):
         w = self.win
         if self.loc[0] == "playlists" and len(self.loc) == 2 and self.loc[1] != "favorites":
-            paths, _ = QFileDialog.getOpenFileNames(w, "Add to playlist", os.path.expanduser("~"),
+            paths, _ = FileDialog.getOpenFileNames(w, "Add to playlist", os.path.expanduser("~"),
                                                     options=w.dialog_options())
             if paths:
                 self.store.add_to_playlist(self.loc[1], paths)

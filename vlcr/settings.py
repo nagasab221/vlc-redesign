@@ -18,6 +18,7 @@ from .store import CONFIG_DIR
 from .theme import ACCENTS, c
 from .widgets import (Button, ColorField, Dropdown, Expander, HLine, IconButton, InfoIcon, Label, NumberField,
                       Segmented, Slider, StartVolume, Toggle, VSlider, elide, paint_shadow)
+from .filedialog import FileDialog
 
 
 class AccentPicker(QWidget):
@@ -87,11 +88,11 @@ class PathRow(QWidget):
         start = os.path.expanduser(self.edit.text() or "~")
         opts = self.win.dialog_options() if self.win else QFileDialog.Options()
         if self.mode == "dir":
-            p = QFileDialog.getExistingDirectory(self, "Choose a folder", start, options=opts)
+            p = FileDialog.getExistingDirectory(self, "Choose a folder", start, options=opts)
         elif self.mode == "save":
-            p, _ = QFileDialog.getSaveFileName(self, "Choose a file", start, options=opts)
+            p, _ = FileDialog.getSaveFileName(self, "Choose a file", start, options=opts)
         else:
-            p, _ = QFileDialog.getOpenFileName(self, "Choose a file", start, options=opts)
+            p, _ = FileDialog.getOpenFileName(self, "Choose a file", start, options=opts)
         if p:
             self.edit.setText(p)
             self.changed.emit(p)
@@ -591,7 +592,7 @@ class SettingsDialog(QDialog):
         return box
 
     def _add_extension(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Add a VLC extension", os.path.expanduser("~/Downloads"),
+        path, _ = FileDialog.getOpenFileName(self, "Add a VLC extension", os.path.expanduser("~/Downloads"),
                                               "VLC Lua extensions (*.lua *.luac)")
         if path:
             d = Path.home() / ".local/share/vlc/lua/extensions"

@@ -11,6 +11,7 @@ from PyQt5.QtWidgets import (QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLi
 from . import icons, theme
 from .theme import ACCENTS, c
 from .widgets import Label, paint_shadow
+from .filedialog import FileDialog
 
 
 class SolidButton(QWidget):
@@ -261,7 +262,7 @@ class Onboarding(QDialog):
         return w
 
     def _browse(self):
-        d = QFileDialog.getExistingDirectory(self, "Choose a media folder", os.path.expanduser(self.folder.text()),
+        d = FileDialog.getExistingDirectory(self, "Choose a media folder", os.path.expanduser(self.folder.text()),
                                              options=self.win.dialog_options())
         if d:
             self.folder.setText(d.replace(os.path.expanduser("~"), "~", 1))

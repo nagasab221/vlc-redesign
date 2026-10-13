@@ -17,6 +17,7 @@ from .engine import SLEEP_OPTIONS, STEREO_MODES, display_name, fmt_ms, fmt_short
 from .theme import c
 from .widgets import (Button, ColorField, Dropdown, Expander, HLine, IconButton, Label, MenuItem, NumberField,
                       PopupMenu, Segmented, Slider, Tabs, Toggle, VSlider, clear_layout, elide, sep)
+from .filedialog import FileDialog
 
 PANEL_W = 400
 
@@ -290,7 +291,7 @@ class TracksPanel(Panel):
 
     def _add_sub(self):
         start = os.path.dirname(self.engine.current) if self.engine.current and not is_url(self.engine.current) else ""
-        path, _ = QFileDialog.getOpenFileName(self.win, "Add subtitles", start,
+        path, _ = FileDialog.getOpenFileName(self.win, "Add subtitles", start,
                                               "Subtitles (*.srt *.ass *.ssa *.vtt *.sub *.smi *.idx);;All files (*)",
                                               options=self.win.dialog_options())
         if path:

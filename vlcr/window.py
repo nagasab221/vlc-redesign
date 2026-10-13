@@ -1,5 +1,5 @@
 """The main window: a frameless shell with the redesign's title bar, the player (video or
-music view + control bar, with the compact library beside it) and the full library
+music view + control bar, with the library sidebar floating over it) and the full library
 with its mini player. It also owns the floating panels, overlays, menus and shortcuts,
 and is the `actions` object every bar element talks to."""
 
@@ -29,6 +29,7 @@ from .panels import QueuePanel, SettingsPanel, TracksPanel
 from .player import OverlayWindow, PlayerArea, StatsBox
 from .theme import c
 from .widgets import OSD, MenuItem, PopupMenu, Toast, sep
+from .filedialog import FileDialog
 
 FRAME = 5
 
@@ -64,14 +65,18 @@ class MainWindow(QWidget):
         self.pages = QStackedWidget()
         root.addWidget(self.pages, 1)
 
-        # player page: compact library + player area
+        # player page: the player area (the library sidebar floats over it)
         self.player_page = QWidget()
         ph = QHBoxLayout(self.player_page)
         ph.setContentsMargins(0, 0, 0, 0)
         ph.setSpacing(0)
+        # The library sidebar floats over the left of the video (like the right-hand panels),
+        # so opening it never resizes the video.
         self.compact = CompactLibrary(self.library)
+        self.compact.setParent(self, Qt.Tool | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+        self.compact.setAttribute(Qt.WA_TranslucentBackground)
         self.compact.hide()
-        ph.addWidget(self.compact)
+        self.sidebar_open = False
         self.player = PlayerArea(self)
         ph.addWidget(self.player, 1)
         self.pages.addWidget(self.player_page)
@@ -124,7 +129,7 @@ class MainWindow(QWidget):
 
     # ------------------------------------------------------------------ wiring
     def _wire_surfaces(self):
-        for surf in (self.player.video, self.player.music):
+        for surf in (self.player.video, self.player.music, self.player.blank):
             surf.clicked.connect(self._surface_click)
             surf.doubleClicked.connect(self._surface_double)
             surf.wheeled.connect(self._surface_wheel)
@@ -222,7 +227,7 @@ class MainWindow(QWidget):
         for w in self._elements("speed"):
             w.set_rate(e.fx["speed"])
         for w in self._elements("sidebar"):
-            w.set_active(self.compact.isVisible())
+            w.set_active(self.sidebar_open)
         for w in self._elements("pip"):
             w.set_active(self.pip is not None)
         for w in self._elements("fullscreen"):
@@ -313,6 +318,8 @@ class MainWindow(QWidget):
     # ------------------------------------------------------------------ engine events
     def _on_state(self, state):
         self._sync_all()
+        if state in ("stopped", "error", "opening", "playing"):
+            self._update_surface()
         if self.store.get("icon_change"):
             self._update_icon(state)
         if state in ("stopped", "ended") and getattr(self.engine, "finished_all", False):
@@ -425,7 +432,8 @@ class MainWindow(QWidget):
         elif key == "max_volume":
             self._sync_all()
         elif key in ("use_library",):
-            self.compact.setVisible(False)
+            self.sidebar_open = False
+            self._sync_compact()
         elif key in ("custom_aspects", "custom_crops"):
             for p in self.panels.values():
                 p.deleteLater()
@@ -447,7 +455,8 @@ class MainWindow(QWidget):
             self.player.music.set_media(cover, text)
             self.player.stack.setCurrentWidget(self.player.music)
         elif self.player.video.parentWidget() is self.player.stack:
-            self.player.stack.setCurrentWidget(self.player.video)
+            idle = not cur or e.state in ("stopped", "error")
+            self.player.stack.setCurrentWidget(self.player.blank if idle else self.player.video)
         self._place_video()
 
     def _place_video(self):
@@ -504,6 +513,7 @@ class MainWindow(QWidget):
             self.rebuild_bars()
         self._place_video()
         self._layout_bars_visibility()
+        self._sync_compact()
 
     def show_library_window(self, loc=None):
         if loc:
@@ -519,6 +529,7 @@ class MainWindow(QWidget):
             self.rebuild_bars()
         self._place_video()
         self._layout_bars_visibility()
+        self._sync_compact()
 
     def go_home(self):
         self.show_library_window(("home",))
@@ -532,9 +543,26 @@ class MainWindow(QWidget):
             return
         if not self.store.get("use_library"):
             return
-        self.compact.setVisible(not self.compact.isVisible())
+        self.sidebar_open = not self.sidebar_open
+        self._sync_compact()
         self._sync_all()
-        QTimer.singleShot(0, self._reposition_floating)
+
+    def _sync_compact(self):
+        show = (self.sidebar_open and self.mode == "player" and not self.isFullScreen() and self.isVisible()
+                and not self.isMinimized() and self.pip is None)
+        if show:
+            self._place_compact()
+            if not self.compact.isVisible():
+                self.compact.show()
+            self.compact.raise_()
+        elif self.compact.isVisible():
+            self.compact.hide()
+
+    def _place_compact(self):
+        page = self.player_page
+        top_left = page.mapToGlobal(QPoint(0, 0))
+        h = page.height() - (self.player.bar.height() if self.player.bar.isVisible() else 0)
+        self.compact.setGeometry(top_left.x(), top_left.y(), self.compact.width(), max(200, h))
 
     def open_current_folder(self):
         cur = self.engine.current
@@ -544,7 +572,7 @@ class MainWindow(QWidget):
             self.library.navigate(("network",))
         else:
             self.library.navigate(("videos",))
-        if self.mode == "player" and not self.compact.isVisible():
+        if self.mode == "player" and not self.sidebar_open:
             self.toggle_sidebar()
 
     def _layout_bars_visibility(self):
@@ -684,8 +712,6 @@ class MainWindow(QWidget):
         if self.mode != "player":
             self.show_player()
         self._was_max = self.isMaximized()
-        self.compact_was = self.compact.isVisible()
-        self.compact.hide()
         target = self.store.get("fullscreen_screen")
         if target != "Current screen":
             for sc in QApplication.screens():
@@ -703,8 +729,6 @@ class MainWindow(QWidget):
             self.showMaximized()
         else:
             self.showNormal()
-        if getattr(self, "compact_was", False):
-            self.compact.show()
         self._layout_bars_visibility()
         self._sync_all()
 
@@ -738,6 +762,7 @@ class MainWindow(QWidget):
             self._place_video()
             self._update_surface()
         self._sync_all()
+        self._sync_compact()
 
     def escape(self):
         if self.open_panel is not None:
@@ -814,6 +839,7 @@ class MainWindow(QWidget):
         p.setGeometry(vr.right() - 20 - 400 + 1, vr.top() + 20, 400, h)
 
     def _reposition_floating(self):
+        self._sync_compact()
         for p in self.panels.values():
             if p.isVisible():
                 self._place_panel(p)
@@ -1139,11 +1165,11 @@ class MainWindow(QWidget):
         start = start or (os.path.dirname(self.engine.current) if self.engine.current and not is_url(self.engine.current)
                           else os.path.expanduser("~/Videos"))
         if kind == "folder":
-            folder = QFileDialog.getExistingDirectory(self, "Open Folder", start, options=self.dialog_options())
+            folder = FileDialog.getExistingDirectory(self, "Open Folder", start, options=self.dialog_options())
             items = [folder] if folder else []
         else:
             exts = " ".join(f"*.{x}" for x in sorted(MEDIA_EXT | {"m3u", "m3u8", "pls"}))
-            items, _ = QFileDialog.getOpenFileNames(self, "Open File(s)", start, f"Media ({exts});;All files (*)",
+            items, _ = FileDialog.getOpenFileNames(self, "Open File(s)", start, f"Media ({exts});;All files (*)",
                                                     options=self.dialog_options())
         if not items:
             return
@@ -1166,7 +1192,7 @@ class MainWindow(QWidget):
     def open_convert(self, items=None):
         items = items or ([self.engine.current] if self.engine.current else [])
         if not items:
-            files, _ = QFileDialog.getOpenFileNames(self, "Convert", os.path.expanduser("~/Videos"),
+            files, _ = FileDialog.getOpenFileNames(self, "Convert", os.path.expanduser("~/Videos"),
                                                     options=self.dialog_options())
             items = files
         if items:
@@ -1191,7 +1217,7 @@ class MainWindow(QWidget):
 
     def add_audio_tracks(self, path=None, folder=None):
         start = folder or (os.path.dirname(path) if path and not is_url(path) else os.path.expanduser("~"))
-        f, _ = QFileDialog.getOpenFileName(self, "Add an audio track", start,
+        f, _ = FileDialog.getOpenFileName(self, "Add an audio track", start,
                                            "Audio (" + " ".join(f"*.{x}" for x in sorted(AUDIO_EXT)) + ")",
                                            options=self.dialog_options())
         if not f:
@@ -1214,7 +1240,7 @@ class MainWindow(QWidget):
         pl = self.store.playlist(pid)
         if not pl:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Export Playlist", os.path.expanduser(f"~/{pl['name']}.m3u"),
+        path, _ = FileDialog.getSaveFileName(self, "Export Playlist", os.path.expanduser(f"~/{pl['name']}.m3u"),
                                               "M3U playlist (*.m3u)", options=self.dialog_options())
         if path:
             lines = ["#EXTM3U"]
@@ -1506,7 +1532,7 @@ class MainWindow(QWidget):
     def _add_sub_file(self):
         cur = self.engine.current
         start = os.path.dirname(cur) if cur and not is_url(cur) else ""
-        path, _ = QFileDialog.getOpenFileName(self, "Add subtitles", start,
+        path, _ = FileDialog.getOpenFileName(self, "Add subtitles", start,
                                               "Subtitles (*.srt *.ass *.ssa *.vtt *.sub *.smi *.idx);;All files (*)",
                                               options=self.dialog_options())
         if path:
@@ -1522,15 +1548,18 @@ class MainWindow(QWidget):
             sc.setEnabled(False)
             sc.deleteLater()
         self._shortcuts = []
+        # Qt routes keys from the floating sidebar and panels (Qt.Tool windows) to these too.
+        self._add_shortcuts(self)
+        self._apply_global_hotkeys()
+
+    def _add_shortcuts(self, target):
         for aid, key in self.hotkeys().items():
             if not key:
                 continue
-            seq = QKeySequence("Esc" if key == "Esc" else key)
-            sc = QShortcut(seq, self)
-            sc.setContext(Qt.WindowShortcut if aid in WINDOW_WIDE else Qt.WindowShortcut)
+            sc = QShortcut(QKeySequence(key), target)
+            sc.setContext(Qt.WindowShortcut)
             sc.activated.connect(lambda a=aid, k=key: self._run_action(a, k))
             self._shortcuts.append(sc)
-        self._apply_global_hotkeys()
 
     def _run_action(self, aid, key=""):
         method = ACTION[aid][4]
@@ -1718,6 +1747,14 @@ class MainWindow(QWidget):
                     ow.hide()
             QTimer.singleShot(50, self._reposition_floating)
         super().changeEvent(e)
+
+    def hideEvent(self, e):
+        super().hideEvent(e)
+        self._sync_compact()
+
+    def showEvent(self, e):
+        super().showEvent(e)
+        QTimer.singleShot(0, self._sync_compact)
 
     def moveEvent(self, e):
         super().moveEvent(e)
