@@ -121,6 +121,9 @@ main() {
 
     mkdir -p "$BIN" "$APPS" "$ICONS"
     ln -sf "$app/vlc-redesign" "$BIN/vlc-redesign"
+    # The menu entry points straight at the icon file: looking it up by name goes through icon caches
+    # (a stale one, e.g. left by Steam in ~/.local/share/icons/hicolor, hides it). The themed copy is
+    # still there for anything that asks for "vlc-redesign".
     cp "$app/vlcr/assets/vlc-redesign.svg" "$ICONS/vlc-redesign.svg"
 
     local mime=""
@@ -137,7 +140,7 @@ GenericName=Media Player
 Comment=Play videos and music with the redesigned VLC interface
 Exec="$app/vlc-redesign" %U
 TryExec=$app/vlc-redesign
-Icon=vlc-redesign
+Icon=$app/vlcr/assets/vlc-redesign.svg
 Terminal=false
 Categories=AudioVideo;Player;Video;Audio;
 Keywords=Player;Video;Audio;Music;Movie;VLC;
