@@ -149,6 +149,15 @@ def subtitle_stream(src, tid, embedded):
     return None
 
 
+def default_sink():
+    """The system's default sound output (PulseAudio / PipeWire), "" if we can't tell."""
+    try:
+        r = subprocess.run(["pactl", "get-default-sink"], capture_output=True, text=True, timeout=2)
+        return r.stdout.strip() if r.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
 def make_plain_subs(src, tid, embedded, dest):
     """Extract one subtitle track of src as plain .srt into dest. Runs in a thread."""
     tmp = str(dest) + ".part"
@@ -1317,6 +1326,28 @@ class Engine(QObject):
         device once the stream has moved over, so asking it right after a pick gave the old one."""
         return self._device
 
+    def _settle_audio_output(self):
+        """Send the sound to the chosen output (or the system default) once playback has
+        started. Now and then on PipeWire a new stream stays silent, or lands on another
+        output, until it's moved; picking the device again was the cure, so do that here."""
+        if not self.is_active():
+            return
+        target = self._device or default_sink()
+        if not target:
+            return
+        actual = ""
+        try:
+            actual = _dec(self.mp.audio_output_device_get())
+        except Exception:
+            pass
+        if actual and actual != target:
+            try:
+                with open(CACHE_DIR / "audio-log.txt", "a", encoding="utf-8") as f:
+                    f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} stream on {actual}, moved to {target}\n")
+            except OSError:
+                pass
+        self.mp.audio_output_device_set(None, target)
+
     def set_audio_device(self, device):
         self._device = device or ""
         self.mp.audio_output_device_set(None, self._device)
@@ -1882,6 +1913,7 @@ class Engine(QObject):
 
     def _on_started(self):
         self._trim_timer.start()
+        QTimer.singleShot(1500, self._settle_audio_output)
         start = getattr(self, "_start_ms", 0)
         length = self.mp.get_length()
         if start and length > 0 and start > length - 5000:
