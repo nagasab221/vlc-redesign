@@ -59,7 +59,8 @@ class GlobalHotkeys(QObject):
 
     def _run(self):
         try:
-            d = display.Display()
+            from .wm import core_display
+            d = core_display()
         except Exception:
             return
         root = d.screen().root

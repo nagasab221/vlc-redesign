@@ -760,6 +760,10 @@ class MainWindow(QWidget):
             pip.deleteLater()
             if self.isMinimized():
                 self.showNormal()
+            # Ask for the focus back: on Wayland (XWayland) the restored window otherwise
+            # never gets the keyboard again, even when clicked.
+            self.raise_()
+            self.activateWindow()
             self._place_video()
             self._update_surface()
         self._sync_all()

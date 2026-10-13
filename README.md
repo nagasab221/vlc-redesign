@@ -55,7 +55,9 @@ Pretty much everything from the video:
 
 ## Things to know
 
-- Needs X11. Mint's Cinnamon session is X11, and on Wayland it runs through XWayland.
+- Needs X11. Mint's Cinnamon session is X11, and on Wayland it runs through XWayland by itself. There the window
+  is dragged by the app instead of the desktop (so no snapping to screen edges), and global hotkeys only fire
+  while an X11 app has focus.
 - Changing a filter like flip, sepia or the compressor makes the video blink for a second while libVLC restarts at
   the same spot. That's just how libVLC 3 does filters.
 - Subtitle font, colour and size work on text subtitles (.srt and friends). Styled .ass subtitles (most anime)
