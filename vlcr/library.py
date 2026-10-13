@@ -654,7 +654,10 @@ class EntryDelegate(QStyledItemDelegate):
             name = {"add": "add", "folder": "folder", "category": e.get("icon")}.get(e["kind"]) or e.get("icon") or \
                 ("music" if e.get("square") else "video")
             p.drawPixmap(QRectF(box.center().x() - 24, box.center().y() - 24, 48, 48).toRect(), icons.pixmap(name, 48))
-        if hover and e["kind"] != "add":
+        if hover and e["kind"] not in ("media", "stream"):
+            p.setBrush(QColor(255, 255, 255, 18))      # folders, albums… open on click: just light up
+            p.drawPath(path)
+        elif hover:
             p.setBrush(QColor(0, 0, 0, 90))
             p.drawPath(path)
             p.setBrush(c("accent"))
@@ -793,6 +796,11 @@ class EntryView(QListWidget):
         e = it.data(Qt.UserRole)
         if QApplication.keyboardModifiers() & (Qt.ControlModifier | Qt.ShiftModifier):
             return
+        # One click opens or plays. A double click out of habit must not open whatever the
+        # second click lands on once the first one has changed the page.
+        if time.monotonic() - self.lib.acted < QApplication.doubleClickInterval() / 1000:
+            return
+        self.lib.acted = time.monotonic()
         if e["kind"] in ("header",):
             self.lib.navigate(e["loc"])
         elif e["kind"] == "add":
@@ -850,7 +858,8 @@ class Library(QObject):
         self.back_stack, self.fwd_stack = [], []
         self.query = ""
         self.single_click_opens = True
-        self.single_click_plays = False
+        self.single_click_plays = True
+        self.acted = 0.0                    # when a click last opened or played something
         self.model.changed.connect(self.locationChanged.emit)
         self.store.libraryChanged.connect(lambda _w: self.locationChanged.emit())
 
