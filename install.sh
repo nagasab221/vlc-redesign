@@ -43,18 +43,22 @@ install_packages() {
     fi
     echo "Installing ${need[*]} (asks for your password)..."
     sudo apt-get update -qq
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${need[@]}" </dev/null
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${need[@]}" </dev/null >/dev/null
 }
 
 download() {
     local tmp
     tmp="$(mktemp -d)"
-    trap 'rm -rf "$tmp"' EXIT
     echo "Downloading VLC Redesign..."
-    curl -fsSL "https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH" | tar -xz -C "$tmp"
+    if ! curl -fsSL "https://codeload.github.com/$REPO/tar.gz/refs/heads/$BRANCH" | tar -xz -C "$tmp"; then
+        rm -rf "$tmp"
+        echo "Download failed. Check your internet connection and try again."
+        exit 1
+    fi
     rm -rf "$DEST"
     mkdir -p "$(dirname "$DEST")"
     mv "$tmp/vlc-redesign-$BRANCH" "$DEST"
+    rm -rf "$tmp"
 }
 
 main() {
