@@ -5,6 +5,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/nagasab221/vlc-redesign/main/install.sh | bash -s -- --remove
 #
 # Or from a clone: ./install.sh (runs the app from the clone) and ./install.sh --remove.
+# Works with apt (Mint, Ubuntu, Debian), pacman (Arch and friends) and dnf (Fedora).
 # It never changes your default video player.
 
 set -euo pipefail
@@ -35,20 +36,48 @@ remove() {
 install_packages() {
     local need=()
     python3 -c 'import ctypes; ctypes.CDLL("libvlc.so.5")' 2>/dev/null || need+=(vlc)
-    python3 -c 'import PyQt5.QtWidgets, PyQt5.QtNetwork' 2>/dev/null || need+=(python3-pyqt5)
-    python3 -c 'import PyQt5.QtSvg' 2>/dev/null || need+=(python3-pyqt5.qtsvg)
+    python3 -c 'import PyQt5.QtWidgets, PyQt5.QtNetwork' 2>/dev/null || need+=(pyqt5)
+    python3 -c 'import PyQt5.QtSvg' 2>/dev/null || need+=(qtsvg)
     command -v ffmpeg >/dev/null || need+=(ffmpeg)
-    python3 -c 'import mutagen' 2>/dev/null || need+=(python3-mutagen)
-    python3 -c 'import Xlib' 2>/dev/null || need+=(python3-xlib)
+    python3 -c 'import mutagen' 2>/dev/null || need+=(mutagen)
+    python3 -c 'import Xlib' 2>/dev/null || need+=(xlib)
     [[ ${#need[@]} -eq 0 ]] && return
 
-    if ! command -v apt-get >/dev/null; then
-        echo "Please install these with your package manager first: ${need[*]}"
+    # The same things under each distro's package names.
+    local pm="" names=() n out
+    local -A pkg
+    if command -v apt-get >/dev/null; then
+        pm=apt
+        pkg=([vlc]=vlc [pyqt5]=python3-pyqt5 [qtsvg]=python3-pyqt5.qtsvg [ffmpeg]=ffmpeg
+             [mutagen]=python3-mutagen [xlib]=python3-xlib)
+    elif command -v pacman >/dev/null; then
+        pm=pacman
+        pkg=([vlc]="vlc vlc-plugins-all" [pyqt5]=python-pyqt5 [qtsvg]=qt5-svg [ffmpeg]=ffmpeg
+             [mutagen]=python-mutagen [xlib]=python-xlib)
+    elif command -v dnf >/dev/null; then
+        pm=dnf
+        pkg=([vlc]=vlc [pyqt5]=python3-qt5 [qtsvg]=qt5-qtsvg [ffmpeg]=ffmpeg-free
+             [mutagen]=python3-mutagen [xlib]=python3-xlib)
+    else
+        echo "Please install VLC, PyQt5 (with QtSvg), ffmpeg, mutagen and python-xlib with your package manager first."
         exit 1
     fi
-    echo "Installing ${need[*]} (asks for your password)..."
-    sudo apt-get update -qq
-    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${need[@]}" </dev/null >/dev/null
+    for n in "${need[@]}"; do
+        read -ra more <<< "${pkg[$n]}"
+        names+=("${more[@]}")
+    done
+
+    echo "Installing ${names[*]} (asks for your password)..."
+    case $pm in
+        apt)
+            sudo apt-get update -qq
+            sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "${names[@]}" </dev/null >/dev/null ;;
+        pacman)
+            out=$(sudo pacman -S --needed --noconfirm "${names[@]}" </dev/null 2>&1) || { echo "$out" | tail -20; exit 1; } ;;
+        dnf)
+            out=$(sudo dnf install -y -q "${names[@]}" </dev/null 2>&1) || { echo "$out" | tail -20; exit 1; }
+            echo "Fedora's own packages leave out some codecs (HEVC, for one); add RPM Fusion if a file won't play." ;;
+    esac
 }
 
 download() {

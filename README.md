@@ -13,8 +13,9 @@ stays as it is.
 curl -fsSL https://raw.githubusercontent.com/nagasab221/vlc-redesign/main/install.sh | bash
 ```
 
-Made on Linux Mint, should work on Ubuntu and Debian too. If you're missing VLC, PyQt5 or ffmpeg it installs them
-(that's the only part that asks for your password). After that it's in the menu as VLC and under Open With when you
+Made on Linux Mint, and the same line works on Ubuntu, Debian, Arch and Fedora. If you're missing VLC, PyQt5 or
+ffmpeg it installs them (that's the only part that asks for your password). On Fedora, add RPM Fusion if some files
+won't play: Fedora's own packages leave out codecs like HEVC. After that it's in the menu as VLC and under Open With when you
 right click a video, and your normal VLC shows up as VLC Classic so you can tell them apart. It doesn't change your
 default player.
 
