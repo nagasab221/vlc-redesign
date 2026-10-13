@@ -1,0 +1,4 @@
+#!/bin/sh
+# Launcher: resolves symlinks so it works from ~/.local/bin.
+HERE="$(dirname "$(readlink -f "$0")")"
+exec python3 "$HERE/main.py" "$@"
