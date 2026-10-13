@@ -13,12 +13,15 @@ per media only while such a filter is active.
 
 import copy
 import ctypes
+import hashlib
 import os
 import random
 import re
 import shutil
 import struct
+import subprocess
 import tempfile
+import threading
 import time
 import wave
 from datetime import datetime
@@ -87,7 +90,7 @@ FX_DEFAULTS = {
     "pitch": 0.0,
     # subtitles
     "sub_track_default": 1, "sub_lang": "English", "sub_delay": 0.0, "sub_fps": 1.0, "sub_duration": 0.0,
-    "sub_embedded_format": False, "sub_font": "Inter", "sub_color": "#FFFFFF", "sub_outline_color": "#000000",
+    "sub_embedded_format": True, "sub_font": "Inter", "sub_color": "#FFFFFF", "sub_outline_color": "#000000",
     "sub_offset": 0, "size_mode": "relative", "sub_size": "Automatic", "sub_px": 32, "outline_px": 2,
     "outline": "Normal", "bg_opacity": 0,
     # playback
@@ -114,8 +117,60 @@ INSTANCE_FX = {
     "comp_ratio", "comp_knee", "comp_makeup", "spatializer", "spat_size", "spat_width", "spat_wet", "spat_dry",
     "spat_damp", "widener", "wide_delay", "wide_feedback", "wide_crossfeed", "wide_dry", "pitch", "sub_fps",
     "sub_duration", "sub_font", "sub_color", "sub_outline_color", "sub_offset", "size_mode", "sub_size", "sub_px",
-    "outline", "outline_px", "bg_opacity", "visualizer", "resolution", "stereo_mode", "sub_embedded_format",
+    "outline", "outline_px", "bg_opacity", "visualizer", "resolution", "stereo_mode",
 }
+
+# Subtitle style settings (freetype options) and the track kinds they can't reach.
+SUB_STYLE_FX = {"sub_font", "sub_color", "sub_outline_color", "size_mode", "sub_size", "sub_px", "outline",
+                "outline_px", "bg_opacity", "sub_offset"}
+STYLED_SUBS = {"ssa "}                                                  # drawn by libass in the file's style
+PICTURE_SUBS = {"spu ", "bdpg", "dvbs", "cvd ", "ogt ", "xsub", "scte"}  # DVD / Blu-ray / DVB bitmaps
+PLAIN_SUBS = CACHE_DIR / "plain-subs"
+
+
+def plain_srt(text):
+    r"""ffmpeg's .srt from an .ass track keeps the file's fonts, sizes and colours as tags;
+    drop them (keeping italics and {\anN} positions) so our style settings apply."""
+    text = re.sub(r"</?(?:font|b|u|s)\b[^>]*>", "", text, flags=re.I)
+    return re.sub(r"\{\\(?!an\d\})[^}]*\}", "", text)
+
+
+def subtitle_stream(src, tid, embedded):
+    """ffmpeg stream spec for libVLC subtitle track tid of src (embedded: libVLC's ids, in order)."""
+    if not embedded:
+        return "0:s:0"                        # a separate subtitle file
+    r = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "s", "-show_entries", "stream=index",
+                        "-of", "csv=p=0", src], capture_output=True, text=True, timeout=30)
+    indexes = [int(x) for x in r.stdout.split() if x.strip().isdigit()]
+    if set(embedded) <= set(indexes):
+        return f"0:{tid}"                     # Matroska: libVLC's track ids are the stream numbers
+    if len(indexes) == len(embedded):
+        return f"0:s:{embedded.index(tid)}"
+    return None
+
+
+def make_plain_subs(src, tid, embedded, dest):
+    """Extract one subtitle track of src as plain .srt into dest. Runs in a thread."""
+    tmp = str(dest) + ".part"
+    try:
+        stream = subtitle_stream(src, tid, embedded)
+        if not stream:
+            return False
+        r = subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", src, "-map", stream, "-f", "srt", tmp],
+                           capture_output=True, timeout=120)
+        if r.returncode != 0 or not os.path.getsize(tmp):
+            return False
+        with open(tmp, encoding="utf-8", errors="replace") as f:
+            text = plain_srt(f.read())
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, dest)
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
 
 PRESET_KEYS = [k for k in FX_DEFAULTS if k not in ("sub_timeline", "waveform", "statistics", "reverse", "sleep")]
 
@@ -555,6 +610,7 @@ class Engine(QObject):
     recordingChanged = pyqtSignal(bool)
     sleepChanged = pyqtSignal(str)
     rateChanged = pyqtSignal(float)
+    _plainReady = pyqtSignal(object, str)   # (item, track id), .srt path or "" (from a worker thread)
 
     def __init__(self, store):
         super().__init__()
@@ -580,6 +636,14 @@ class Engine(QObject):
         self._history = []
         self._pause_on_start = False
         self._restore = None                # (audio track, spu track) to restore after a rebuild
+        # .ass tracks shown as plain text so the subtitle style applies ("Embedded Sub Format" off)
+        self._plain_es = {}                 # (item, track id) -> id of its plain copy in the player
+        self._plain_on = None               # track id whose plain copy is showing
+        self._plain_want = None             # track id that should show as plain text
+        self._plain_busy = set()            # (item, track id) being converted / loaded
+        self._codecs = {}                   # item -> {subtitle track id: codec}, kept through restarts
+        self._hold = None                   # {"audio", "spu", "until"}: tracks to keep after a rebuild
+        self._plainReady.connect(self._plain_ready)
         self._sleep_timer = QTimer(self, singleShot=True, timeout=self._sleep_fire)
         self._sleep_end_of_item = False
         self._record = None                 # {"start": ms, "item": ..., "proc": QProcess}
@@ -650,7 +714,7 @@ class Engine(QObject):
         was_paused = self._state == "paused"
         active = self.is_active()
         t = self.mp.get_time() if active else 0
-        restore = (self.mp.audio_get_track(), self.mp.video_get_spu()) if active else None
+        restore = self._wanted_tracks() if active else None
         rate = self.mp.get_rate() or 1.0
         self._save_progress()
         self.mp.stop()
@@ -660,6 +724,7 @@ class Engine(QObject):
         if item and active:
             self._restore = restore
             self._start_item(self.index, start_ms=max(0, t), resume=False, quiet=True)
+            self._hold = {"audio": restore[0], "spu": restore[1], "until": time.monotonic() + 6}
             self._pause_on_start = was_paused
             if abs(rate - 1.0) > 0.01:
                 self.mp.set_rate(rate)
@@ -707,7 +772,11 @@ class Engine(QObject):
             return
         self.fx[key] = value
         self.fxChanged.emit(key)
-        if key in INSTANCE_FX:
+        if key in SUB_STYLE_FX:
+            self._style_touched(key)
+        if key == "sub_embedded_format":
+            self._set_embedded_format(bool(value))
+        elif key in INSTANCE_FX:
             self.schedule_rebuild()
         elif key.startswith("eq_"):
             self._apply_eq()
@@ -1002,6 +1071,10 @@ class Engine(QObject):
         self._start_item(i, resume=resume)
 
     def _start_item(self, i, start_ms=0, resume=True, quiet=False):
+        self._plain_es, self._plain_on, self._plain_busy = {}, None, set()
+        if not quiet:
+            self._plain_want = self._hold = None
+            self._codecs = {}
         self.index = i
         item = self.items[i]
         media = self.instance.media_new(item) if is_url(item) else self.instance.media_new_path(item)
@@ -1038,6 +1111,11 @@ class Engine(QObject):
         self._last = (start_ms, saved["length"] if saved else 0)
         self._pause_on_start = not self.store.get("autoplay") and not quiet
         self.mp.play()
+        if self._state != "opening":
+            # A restart can finish between two polls; without this the poll never sees it start
+            # and skips _on_started (track restore after a rebuild, delays, speed).
+            self._state = "opening"
+            self.stateChanged.emit("opening")
         if self.shuffle and not quiet:
             self._history.append(i)
         if not quiet:
@@ -1147,7 +1225,12 @@ class Engine(QObject):
 
     def set_position(self, frac):
         if self.mp.is_seekable():
-            self.mp.set_position(max(0.0, min(1.0, frac)))
+            frac = max(0.0, min(1.0, frac))
+            length = self.mp.get_length()
+            if length > 1000:
+                # libVLC ignores a seek to the very end of some files (MKV stays put), so land just before it
+                frac = min(frac, (length - 400) / length)
+            self.mp.set_position(frac)
 
     def next_frame(self):
         if self.is_active():
@@ -1202,6 +1285,8 @@ class Engine(QObject):
         return self.mp.audio_get_track()
 
     def set_audio_track(self, tid):
+        if self._hold:
+            self._hold["audio"] = tid
         self.mp.audio_set_track(tid)
         self.tracksChanged.emit()
 
@@ -1272,13 +1357,199 @@ class Engine(QObject):
         self.tracksChanged.emit()
 
     def spu_tracks(self):
-        return [(i, _dec(n)) for i, n in (self.mp.video_get_spu_description() or [])]
+        hidden = set(self._plain_es.values())       # our plain-text copies stand in for their originals
+        return [(i, _dec(n)) for i, n in (self.mp.video_get_spu_description() or []) if i not in hidden]
 
     def spu(self):
-        return self.mp.video_get_spu()
+        cur = self.mp.video_get_spu()
+        if self._plain_on is not None and cur == self._plain_es.get((self.current, self._plain_on)):
+            return self._plain_on
+        return cur
+
+    def _wanted_tracks(self):
+        """(audio, subtitle) the user has, including while a rebuild is still starting up."""
+        if self._restore:
+            return self._restore
+        if self._hold:
+            return self._hold["audio"], self._hold["spu"]
+        if self._state == "opening":
+            return None, None       # nothing chosen yet (-1 would mean "off"); let libVLC pick
+        return self.mp.audio_get_track(), self.spu()
+
+    def _keep_tracks(self):
+        """After a rebuild libVLC picks tracks again (an .srt next to the file wins as soon as
+        it loads); keep putting back the ones that were showing until playback settles."""
+        h = self._hold
+        if not h or self._restore:
+            return
+        if time.monotonic() > h["until"]:
+            self._hold = None
+            return
+        if h["audio"] is not None and h["audio"] != self.mp.audio_get_track():
+            self.mp.audio_set_track(h["audio"])
+        tid = h["spu"]
+        if tid is None:
+            return
+        plain = None
+        if self._plain_want == tid and tid >= 0:
+            plain = self._plain_es.get((self.current, tid))
+            if plain is None:
+                self._show_plain(tid)
+        target = plain if plain is not None else tid
+        if self.mp.video_get_spu() != target:
+            self.mp.video_set_spu(target)
+            self._plain_on = tid if plain is not None else None
+            self.tracksChanged.emit()
 
     def set_spu(self, tid):
+        if self._hold:
+            self._hold["spu"] = tid
+        self._plain_on = None
         self.mp.video_set_spu(tid)
+        self._plain_want = tid if tid >= 0 and not self.fx["sub_embedded_format"] and \
+            self.spu_kind(tid) == "styled" else None
+        if self._plain_want is not None:
+            self._show_plain(tid)
+        self.tracksChanged.emit()
+
+    # --- subtitle styling ----------------------------------------------------------
+    # libVLC draws .ass/.ssa tracks with libass in the file's own style and ignores the
+    # font/colour/size options, and picture subtitles (DVD, Blu-ray) can't be restyled at
+    # all. With "Embedded Sub Format" off, an .ass track is converted to plain text once
+    # (ffmpeg, cached) and shown in its place, so the style settings reach it.
+    def _spu_codecs(self):
+        """Subtitle track id -> codec for the current item (remembered while a rebuild restarts it)."""
+        known = self._codecs.setdefault(self.current, {})
+        media = self.mp.get_media()
+        if media:
+            try:
+                known.update({t.id: t.codec.to_bytes(4, "little").decode("latin1") for t in (media.tracks_get() or [])
+                              if getattr(t.type, "value", t.type) == 2})
+            except Exception:
+                pass
+            finally:
+                media.release()
+        return known
+
+    def spu_kind(self, tid=None):
+        """"text", "styled" (.ass) or "picture" for a subtitle track, "" if none/unknown."""
+        tid = self._wanted_tracks()[1] if tid is None else tid
+        if tid is None or tid < 0:
+            return ""
+        codec = self._spu_codecs().get(tid, "")
+        if codec in STYLED_SUBS:
+            return "styled"
+        if codec in PICTURE_SUBS:
+            return "picture"
+        return "text" if codec else ""
+
+    def sub_style_note(self):
+        kind = self.spu_kind() if self.is_active() else ""
+        if kind == "picture":
+            return ("This subtitle track is pictures (from a DVD or Blu-ray), so its font, colour and size can't change. "
+                    "Add an .srt file to use your style.")
+        if kind == "styled" and self.fx["sub_embedded_format"]:
+            return "This track has its own styling. Changing the style below shows it as plain text with yours."
+        return ""
+
+    def _plain_source(self, tid):
+        """(file, embedded track ids or [] for a separate subtitle file) holding track tid."""
+        visible = [i for i, _ in self.spu_tracks() if i >= 0]
+        ext = self.external_subtitles()
+        n_ext = min(len(ext), len(visible))
+        embedded = visible[:len(visible) - n_ext] if n_ext else visible
+        if tid in embedded:
+            return self.current, embedded
+        if tid in visible:
+            return ext[n_ext - (len(visible) - visible.index(tid))], []
+        return None
+
+    def _show_plain(self, tid):
+        item = self.current
+        key = (item, tid)
+        es = self._plain_es.get(key)
+        if es is not None:
+            self.mp.video_set_spu(es)
+            self._plain_on = tid
+            self.tracksChanged.emit()
+            return
+        if key in self._plain_busy:
+            return
+        src = self._plain_source(tid)
+        try:
+            st = os.stat(src[0]) if src else None
+        except OSError:
+            st = None
+        if not st:
+            self.message.emit("Couldn't convert these subtitles to plain text", "")
+            return
+        self._plain_busy.add(key)
+        name = hashlib.sha1(f"{src[0]}|{st.st_size}|{st.st_mtime}|{tid}|{src[1]}".encode()).hexdigest() + ".srt"
+        dest = PLAIN_SUBS / name
+        if dest.exists():
+            self._plain_ready(key, str(dest))
+            return
+        PLAIN_SUBS.mkdir(parents=True, exist_ok=True)
+
+        def work():
+            self._plainReady.emit(key, str(dest) if make_plain_subs(src[0], tid, src[1], dest) else "")
+        threading.Thread(target=work, daemon=True).start()
+
+    def _plain_ready(self, key, path):
+        item, tid = key
+        if item != self.current or self._plain_want != tid or not path:
+            self._plain_busy.discard(key)
+            if path == "" and item == self.current:
+                self.message.emit("Couldn't convert these subtitles to plain text", "")
+            return
+        before = {i for i, _ in (self.mp.video_get_spu_description() or [])}
+        if self.mp.add_slave(vlc.MediaSlaveType.subtitle, Path(path).as_uri(), True) != 0:
+            self._plain_busy.discard(key)
+            return
+        tries = [0]
+
+        def find():
+            # the new track appears a moment after it's added
+            if item != self.current:
+                return
+            new = {i for i, _ in (self.mp.video_get_spu_description() or [])} - before
+            if new:
+                self._plain_busy.discard(key)
+                self._plain_es[key] = max(new)
+                if self._plain_want == tid:
+                    self.mp.video_set_spu(self._plain_es[key])
+                    self._plain_on = tid
+                else:
+                    self.mp.video_set_spu(self._plain_want if self._plain_want is not None else tid)
+                self.tracksChanged.emit()
+            elif tries[0] < 100:
+                tries[0] += 1
+                QTimer.singleShot(100, find)
+            else:
+                self._plain_busy.discard(key)
+        QTimer.singleShot(100, find)
+
+    def _style_touched(self, key):
+        """A style setting changed: make sure it shows, or say why it can't."""
+        if not self.is_active():
+            return
+        kind = self.spu_kind()
+        if kind == "picture" and key != "sub_offset":
+            self.message.emit("These subtitles are pictures, so their style can't change", "")
+        elif kind == "styled" and self.fx["sub_embedded_format"]:
+            self.fx["sub_embedded_format"] = False
+            self.fxChanged.emit("sub_embedded_format")
+            self._plain_want = self._wanted_tracks()[1]
+            self.message.emit("Showing these subtitles in your style", "")
+
+    def _set_embedded_format(self, on):
+        if on:
+            orig, self._plain_on, self._plain_want = self._plain_on, None, None
+            if orig is not None:
+                self.mp.video_set_spu(orig)
+        elif self.spu_kind() == "styled":
+            self._plain_want = self._wanted_tracks()[1]
+            self._show_plain(self._plain_want)
         self.tracksChanged.emit()
 
     def cycle_spu(self, key=""):
@@ -1566,6 +1837,7 @@ class Engine(QObject):
                 return
 
         if state in ("playing", "paused"):
+            self._keep_tracks()
             t, length = self.mp.get_time(), self.mp.get_length()
             if t >= 0:
                 self._last = (t, length)
@@ -1584,6 +1856,10 @@ class Engine(QObject):
                 self._read_meta()
             if self._tracks_checked < 3 and t > 0:
                 self._tracks_checked += 1
+                if self._tracks_checked == 2 and not self.fx["sub_embedded_format"] and self._plain_want is None \
+                        and self._plain_on is None and self.spu_kind() == "styled":
+                    self._plain_want = self.spu()       # the track libVLC picked is .ass: show it in our style
+                    self._show_plain(self._plain_want)
                 self.tracksChanged.emit()
             now = time.monotonic()
             if now - self._last_save > 5:
@@ -1610,8 +1886,16 @@ class Engine(QObject):
         if self._restore:
             atrack, strack = self._restore
             self._restore = None
-            QTimer.singleShot(300, lambda: (self.mp.audio_set_track(atrack), self.mp.video_set_spu(strack)))
+            QTimer.singleShot(300, lambda: self._restore_tracks(atrack, strack))
         QTimer.singleShot(200, self._apply_runtime)
+
+    def _restore_tracks(self, atrack, strack):
+        if atrack is not None:
+            self.mp.audio_set_track(atrack)
+        if strack is not None:
+            self.mp.video_set_spu(strack)
+            if self._plain_want == strack:
+                self._show_plain(strack)
 
     def _on_ended(self):
         item = self.current

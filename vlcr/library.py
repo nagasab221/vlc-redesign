@@ -14,8 +14,8 @@ import threading
 import time
 import xml.etree.ElementTree as ET
 
-from PyQt5.QtCore import (QByteArray, QMimeData, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer, QUrl,
-                          pyqtSignal)
+from PyQt5.QtCore import (QByteArray, QEvent, QMimeData, QObject, QPoint, QPointF, QRect, QRectF, QSize, Qt, QTimer,
+                          QUrl, pyqtSignal)
 from PyQt5.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPixmap
 from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QHBoxLayout, QInputDialog, QLineEdit,
@@ -26,7 +26,7 @@ from . import icons, theme
 from .engine import (AUDIO_EXT, MEDIA_EXT, VIDEO_EXT, display_name, ext, fmt_short, is_audio, is_url, media_in_dir,
                      natural_key)
 from .theme import c
-from .widgets import HLine, IconButton, Label, MenuItem, PopupMenu, elide, sep
+from .widgets import HLine, IconButton, Label, MenuItem, PopupMenu, elide, sep, wants_list_key
 from .filedialog import FileDialog
 
 SECTIONS = [
@@ -734,6 +734,12 @@ class EntryView(QListWidget):
         md.setUrls([QUrl.fromLocalFile(i) if not is_url(i) else QUrl(i) for i in out[:200]])
         return md
 
+    def event(self, e):
+        if e.type() == QEvent.ShortcutOverride and wants_list_key(e):
+            e.accept()
+            return True
+        return super().event(e)
+
     def wheelEvent(self, e):
         if self.flow() == QListView.LeftToRight and not self.isWrapping() and not e.angleDelta().x():
             bar = self.horizontalScrollBar()
@@ -1248,6 +1254,13 @@ class SearchBox(QLineEdit):
         super().paintEvent(e)
         p = QPainter(self)
         p.drawPixmap(8, (self.height() - 24) // 2, icons.pixmap("search", 24))
+
+    def event(self, e):
+        # Esc clears the search; without this the window's Esc shortcut would take it
+        if e.type() == QEvent.ShortcutOverride and e.key() == Qt.Key_Escape:
+            e.accept()
+            return True
+        return super().event(e)
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Escape:

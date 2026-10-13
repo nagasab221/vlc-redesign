@@ -57,6 +57,9 @@ Pretty much everything from the video:
 - Needs X11. Mint's Cinnamon session is X11, and on Wayland it runs through XWayland.
 - Changing a filter like flip, sepia or the compressor makes the video blink for a second while libVLC restarts at
   the same spot. That's just how libVLC 3 does filters.
+- Subtitle font, colour and size work on text subtitles (.srt and friends). Styled .ass subtitles (most anime)
+  keep their own look until you change one of those, then they're shown as plain text in your style; the Embedded
+  Sub Format toggle switches back. Subtitles from DVD and Blu-ray rips are pictures, so they can't be restyled.
 - Reverse playback, HDR tone mapping and casting aren't possible with libVLC 3, so those options are greyed out.
 - OpenSubtitles search opens their website, since their API needs your own key.
 

@@ -5,6 +5,7 @@ Duration, volume, Toggle, Values, Dropdown, option, Button...).
 """
 
 import math
+import time
 
 from PyQt5.QtCore import (QEasingCurve, QEvent, QPoint, QPointF, QPropertyAnimation, QRect, QRectF, QSize, QTimer,
                           Qt, pyqtProperty, pyqtSignal)
@@ -322,9 +323,13 @@ class SeekBar(QWidget, Customizable):
         self.chapters = []      # fractions
         self._drag = False
         self._hover_x = None
+        self._wheel_at = 0.0
+        self._wheel_timer = QTimer(self, singleShot=True, interval=120,
+                                   timeout=lambda: self.seekRequested.emit(self.value))
 
     def set_value(self, frac):
-        if not self._drag:
+        # while dragging, or right after wheel steps (the player hasn't caught up yet), keep ours
+        if not self._drag and time.monotonic() - self._wheel_at > 0.6:
             self.value = max(0.0, min(1.0, frac))
             self.update()
 
@@ -363,7 +368,16 @@ class SeekBar(QWidget, Customizable):
         self.update()
 
     def wheelEvent(self, e):
-        e.ignore()
+        # like VLC's seek slider: 1% per notch
+        steps = e.angleDelta().y() / 120 or -e.angleDelta().x() / 120
+        if not steps or not self.enabled_seek or self._drag or self.customizing:
+            e.ignore()
+            return
+        e.accept()
+        self.value = max(0.0, min(1.0, self.value + 0.01 * steps))
+        self._wheel_at = time.monotonic()
+        self._wheel_timer.start()       # one seek per burst of notches; libVLC can drop seeks sent back to back
+        self.update()
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -477,7 +491,7 @@ class ConeVolume(QWidget, Customizable):
         self._drag = False
 
     def wheelEvent(self, e):
-        steps = e.angleDelta().y() / 120 or e.angleDelta().x() / 120
+        steps = e.angleDelta().y() / 120 or -e.angleDelta().x() / 120
         self.changed.emit(max(0, min(self.maximum, int(self.value + steps * 5))))
         self._show_bubble()
 
@@ -1032,24 +1046,62 @@ def sep():
     return MenuItem(separator=True)
 
 
+LIST_KEYS = {Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right, Qt.Key_Home, Qt.Key_End, Qt.Key_PageUp, Qt.Key_PageDown}
+
+
+def wants_list_key(ev):
+    """For a list's ShortcutOverride: arrows, Home/End and Page keys (alone or with Shift)
+    move through the list instead of seeking or changing the volume, as in VLC's playlist."""
+    return ev.key() in LIST_KEYS and not (ev.modifiers() & ~(Qt.ShiftModifier | Qt.KeypadModifier))
+
+
 class PopupMenu(QWidget):
     """The redesign's menu: #191919 at 95%, r=10, 48 px options, two-tone icons on the
-    left, shortcuts in grey on the right, submenus with a chevron."""
+    left, shortcuts in grey on the right, submenus with a chevron.
+
+    Only the top menu is a real Qt popup. It holds the mouse and keyboard grab, so it gets
+    the events meant for its submenus as well and hands them to whichever menu is under
+    the pointer. A submenu opens after a short pause and stays open while the pointer
+    heads towards it, so cutting diagonally across other rows doesn't swap it out.
+    """
     ROW = 48
     PAD = 4
-    MARGIN = 18      # room for the shadow
+    MARGIN = 18          # room for the shadow
+    GAP = 6              # between a menu and its submenu
+    ARROW = 24           # scroll strips, when a menu is taller than the screen
+    OPEN_DELAY = 150     # ms before hovering a row opens its submenu
+    SWITCH_DELAY = 300   # ms before hovering another row replaces an open submenu
 
-    def __init__(self, items, parent=None, width=None, row=48, check_right=True, min_width=220):
-        super().__init__(parent, Qt.Popup | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint)
+    def __init__(self, items, parent=None, width=None, row=48, check_right=True, min_width=220, submenu=False):
+        # Submenus are unmanaged windows like the popup itself. (Not Qt.ToolTip: Qt pulls those
+        # fully on screen, shadow margin included, which shifts a menu that touches an edge.)
+        flags = (Qt.Tool | Qt.BypassWindowManagerHint if submenu else Qt.Popup) \
+            | Qt.FramelessWindowHint | Qt.NoDropShadowWindowHint
+        super().__init__(parent, flags)
         self.setAttribute(Qt.WA_TranslucentBackground)
         self.setAttribute(Qt.WA_DeleteOnClose)
+        if submenu:
+            self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.setMouseTracking(True)
         self.items = items
         self.ROW = row
         self.check_right = check_right
         self.hover = -1
-        self.child = None
+        self.child = None            # the open submenu
+        self.child_row = -1          # the row it belongs to
         self.parent_menu = None
+        self.side = 1                # submenus open to the right (1) or left (-1)
+        self.closed_callback = None
+        self.scroll = 0
+        self._pending = -1
+        self._timer = QTimer(self, singleShot=True, timeout=self._switch_sub)
+        self._scroller = QTimer(self, interval=30, timeout=self._auto_scroll)
+        self._scroll_dir = 0
+        # top menu only
+        self._last = None            # previous pointer position, to tell where it's heading
+        self._start = None           # pointer position when the menu opened
+        self._armed = False          # releasing the button picks an item only after the pointer moved
+
         self.font = theme.font(14)
         fm = QFontMetrics(self.font)
         has_icon = any(i.icon for i in items)
@@ -1060,16 +1112,30 @@ class PopupMenu(QWidget):
         content = 14 + (34 if has_icon else 0) + text_w + (24 + sc_w if sc_w else 0) + (34 if has_sub else 0) \
             + (34 if has_check else 0) + 14
         self.menu_w = max(min_width, width or 0, content)
-        h = self.PAD * 2 + sum(9 if i.separator else self.ROW for i in items)
-        self.resize(self.menu_w + 2 * self.MARGIN, h + 2 * self.MARGIN)
-        self.closed_callback = None
+        self.content_h = self.PAD * 2 + sum(9 if i.separator else self.ROW for i in items)
+        self.card_h = self.content_h
+        self.resize(self.menu_w + 2 * self.MARGIN, self.card_h + 2 * self.MARGIN)
 
-    # geometry helpers
+    # ------------------------------------------------------------------ geometry
     def card(self):
-        return QRectF(self.MARGIN, self.MARGIN, self.menu_w, self.height() - 2 * self.MARGIN)
+        return QRectF(self.MARGIN, self.MARGIN, self.menu_w, self.card_h)
+
+    def card_global(self):
+        return QRect(self.mapToGlobal(QPoint(self.MARGIN, self.MARGIN)), QSize(self.menu_w, self.card_h))
+
+    def scrollable(self):
+        return self.content_h > self.card_h
+
+    def _view(self):
+        """Where the rows show; a scrolling menu keeps a strip for an arrow at each end."""
+        r = self.card()
+        return r.adjusted(0, self.ARROW, 0, -self.ARROW) if self.scrollable() else r
+
+    def _max_scroll(self):
+        return max(0, self.content_h - int(self._view().height())) if self.scrollable() else 0
 
     def _row_rects(self):
-        y = self.MARGIN + self.PAD
+        y = self._view().top() + self.PAD - self.scroll
         out = []
         for it in self.items:
             hgt = 9 if it.separator else self.ROW
@@ -1077,30 +1143,157 @@ class PopupMenu(QWidget):
             y += hgt
         return out
 
-    def popup(self, pos, align_right=False, above=False):
-        """Show with the card's top-left (or top-right) corner at pos (global)."""
-        x = pos.x() - self.MARGIN - (self.menu_w if align_right else 0)
-        y = pos.y() - self.MARGIN - (self.height() - 2 * self.MARGIN if above else 0)
-        screen = QApplication.screenAt(pos) or QApplication.primaryScreen()
-        g = screen.availableGeometry()
-        x = max(g.left() - self.MARGIN, min(x, g.right() - self.width() + self.MARGIN))
-        if y + self.height() - self.MARGIN > g.bottom():
-            y = g.bottom() - self.height() + self.MARGIN
-        y = max(g.top() - self.MARGIN, y)
-        self.move(int(x), int(y))
-        self.show()
-        self.setFocus()
+    def _index_at(self, pos):
+        pos = QPointF(pos)
+        if not self._view().contains(pos):
+            return -1
+        for i, r in enumerate(self._row_rects()):
+            if r.contains(pos) and not self.items[i].separator:
+                return i
+        return -1
+
+    def _selectable(self):
+        return [i for i, it in enumerate(self.items) if not it.separator and it.enabled]
+
+    def _has_sub(self, i):
+        return 0 <= i < len(self.items) and bool(self.items[i].submenu) and self.items[i].enabled
+
+    @staticmethod
+    def _screen_rect(pt):
+        screen = QApplication.screenAt(pt) or QApplication.primaryScreen()
+        return screen.availableGeometry()
+
+    def _fit(self, g, room=None):
+        """Cap the height at the screen's (or the room given); the rest scrolls."""
+        limit = g.height() - 8 if room is None else max(room, 3 * self.ROW + 2 * self.ARROW)
+        self.card_h = min(self.content_h, limit)
+        self.scroll = 0
+        self.resize(self.menu_w + 2 * self.MARGIN, self.card_h + 2 * self.MARGIN)
+
+    # ------------------------------------------------------------------ showing
+    def popup(self, pos, align_right=False, above=False, flip_y=None):
+        """Show with the card's top-left (or top-right) corner at pos (global). When it doesn't
+        fit, it opens on the other side of pos, or of the widget it belongs to (flip_y is that
+        widget's other edge); if neither side has room it takes the larger one and scrolls."""
+        g = self._screen_rect(pos)
+        self._fit(g)
+        w, h = self.menu_w, self.card_h
+        x = pos.x() - (w if align_right else 0)
+        if x + w > g.right() + 1:
+            x = pos.x() - w
+        if x < g.left():
+            x = pos.x() if align_right else g.left()
+        x = max(g.left(), min(x, g.right() + 1 - w))
+        if flip_y is None:
+            if above:
+                y = pos.y() - h
+                if y < g.top():
+                    y = pos.y()
+            else:
+                y = pos.y()
+                if y + h > g.bottom() + 1:
+                    y = pos.y() - h
+        else:
+            below_y = flip_y if above else pos.y()      # card top when it opens downwards
+            above_y = pos.y() if above else flip_y      # card bottom when it opens upwards
+            down_room, up_room = g.bottom() + 1 - below_y, above_y - g.top()
+            fits_down, fits_up = h <= down_room, h <= up_room
+            if above:
+                down = not fits_up and (fits_down or down_room > up_room)
+            else:
+                down = fits_down or (not fits_up and down_room >= up_room)
+            room = down_room if down else up_room
+            if h > room:
+                self._fit(g, room)
+                h = self.card_h
+            y = below_y if down else above_y - h
+        y = max(g.top(), min(y, g.bottom() + 1 - h))
+        checked = [i for i, it in enumerate(self.items) if it.checked]
+        if checked and self.scrollable():
+            self._ensure_visible(checked[0], centre=True)
+        self._show_at(x, y)
 
     def popup_below(self, widget, align_right=False, gap=4):
         r = widget.rect()
         pt = widget.mapToGlobal(QPoint(r.right() if align_right else r.left(), r.bottom() + gap))
-        self.popup(pt, align_right=align_right)
+        top = widget.mapToGlobal(QPoint(0, r.top() - gap)).y()
+        self.popup(pt, align_right=align_right, flip_y=top)
 
     def popup_above(self, widget, align_right=False, gap=6):
         r = widget.rect()
         pt = widget.mapToGlobal(QPoint(r.right() if align_right else r.left(), r.top() - gap))
-        self.popup(pt, align_right=align_right, above=True)
+        bottom = widget.mapToGlobal(QPoint(0, r.bottom() + gap)).y()
+        self.popup(pt, align_right=align_right, above=True, flip_y=bottom)
 
+    def _show_at(self, x, y):
+        self.move(int(x) - self.MARGIN, int(y) - self.MARGIN)
+        self.show()
+        if self.parent_menu is None:
+            self._start = QCursor.pos()
+            self._last = self._start
+            self._armed = False
+            self.setFocus()
+
+    def _open_sub(self, i):
+        self._close_child()
+        if not self._has_sub(i):
+            return
+        it = self.items[i]
+        items = it.submenu() if callable(it.submenu) else it.submenu
+        if not items:
+            return
+        sub = PopupMenu(items, self.parentWidget(), check_right=True, submenu=True)
+        sub.parent_menu = self
+        self.child, self.child_row = sub, i
+        card = self.card_global()
+        g = self._screen_rect(card.center())
+        sub._fit(g)
+        right = card.right() + 1 + self.GAP
+        left = card.left() - self.GAP - sub.menu_w
+        fits_right = right + sub.menu_w <= g.right() + 1
+        fits_left = left >= g.left()
+        sub.side = self.side if (fits_right if self.side > 0 else fits_left) else -self.side
+        if not (fits_right or fits_left):
+            sub.side, x = 1, g.right() + 1 - sub.menu_w
+        else:
+            x = right if sub.side > 0 else left
+        row_top = self.mapToGlobal(QPoint(0, int(self._row_rects()[i].top()))).y()
+        y = max(g.top(), min(row_top - sub.PAD, g.bottom() + 1 - sub.card_h))
+        sub._show_at(x, y)
+
+    def _close_child(self):
+        child, self.child, self.child_row = self.child, None, -1
+        if child is not None:
+            try:
+                child.close()
+            except RuntimeError:
+                pass
+
+    def _root(self):
+        m = self
+        while m.parent_menu is not None:
+            m = m.parent_menu
+        return m
+
+    def _chain(self):
+        out, m = [], self._root()
+        while m is not None:
+            out.append(m)
+            m = m.child
+        return out
+
+    def _menu_at(self, gp):
+        for m in reversed(self._chain()):
+            if m.card_global().contains(gp):
+                return m
+        return None
+
+    def _set_hover(self, i):
+        if i != self.hover:
+            self.hover = i
+            self.update()
+
+    # ------------------------------------------------------------------ painting
     def paintEvent(self, e):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
@@ -1111,13 +1304,18 @@ class PopupMenu(QWidget):
         p.drawRoundedRect(card, 10, 10)
         fm = QFontMetrics(self.font)
         p.setFont(self.font)
+        view = self._view()
+        p.save()
+        p.setClipRect(view)
         for i, (it, r) in enumerate(zip(self.items, self._row_rects())):
+            if r.bottom() < view.top() or r.top() > view.bottom():
+                continue
             if it.separator:
                 p.setPen(Qt.NoPen)
                 p.setBrush(c("line"))
                 p.drawRect(QRectF(r.left() + 8, r.center().y(), r.width() - 16, 1))
                 continue
-            if (i == self.hover and it.enabled) or (it.checked and self.check_right and False):
+            if i == self.hover and it.enabled:
                 p.setPen(Qt.NoPen)
                 p.setBrush(c("hover"))
                 p.drawRoundedRect(r, 6, 6)
@@ -1145,106 +1343,240 @@ class PopupMenu(QWidget):
             p.setPen(c("text"))
             p.drawText(QRectF(x, r.top(), right - x, r.height()), Qt.AlignVCenter | Qt.AlignLeft,
                        elide(it.text, self.font, right - x))
-        p.setOpacity(1)
+            p.setOpacity(1)
+        p.restore()
+        if self.scrollable():
+            cx = card.center().x() - 10
+            for name, y, on in (("chevron-up", card.top() + 2, self.scroll > 0),
+                                ("chevron-down", card.bottom() - 22, self.scroll < self._max_scroll())):
+                p.setOpacity(1.0 if on else 0.25)
+                p.drawPixmap(QPointF(cx, y), icons.pixmap(name, 20))
+            p.setOpacity(1)
 
-    def _index_at(self, pos):
-        for i, r in enumerate(self._row_rects()):
-            if r.contains(QPointF(pos)) and not self.items[i].separator:
-                return i
-        return -1
+    # ------------------------------------------------------------------ scrolling
+    def _scroll_by(self, dy):
+        new = max(0, min(self._max_scroll(), self.scroll + dy))
+        if new == self.scroll:
+            return False
+        self.scroll = new
+        self._close_child()
+        self.update()
+        return True
 
-    def mouseMoveEvent(self, e):
-        i = self._index_at(e.pos())
-        if i != self.hover:
-            self.hover = i
-            self.update()
+    def _auto_scroll(self):
+        if not self._scroll_by(self._scroll_dir * 12):
+            self._scroll_stop()
+
+    def _scroll_stop(self):
+        self._scroll_dir = 0
+        self._scroller.stop()
+
+    def _ensure_visible(self, i, centre=False):
+        if not self.scrollable():
+            return
+        sel = self._selectable()
+        if sel and i in (sel[0], sel[-1]):
+            self._scroll_by((-1 if i == sel[0] else 1) * self.content_h)
+            return
+        r, v = self._row_rects()[i], self._view()
+        if centre:
+            self._scroll_by(int(r.center().y() - v.center().y()))
+            return
+        if r.top() < v.top():
+            self._scroll_by(int(r.top() - v.top()) - 1)
+        elif r.bottom() > v.bottom():
+            self._scroll_by(int(r.bottom() - v.bottom()) + 1)
+
+    # ------------------------------------------------------------------ pointer
+    def _heading_to_child(self, a, b):
+        """Is the pointer moving from a to b towards the open submenu's near edge?"""
+        cg = self.child.card_global()
+        near = cg.left() if self.child.side > 0 else cg.right()
+        dx, dy = b.x() - a.x(), b.y() - a.y()
+        if (near - a.x()) * dx <= 0:
+            return False
+        tx, ty = near - a.x(), cg.top() - a.y()
+        bx, by = near - a.x(), cg.bottom() - a.y()
+        c1 = tx * dy - ty * dx
+        c2 = dx * by - dy * bx
+        return (c1 >= 0 and c2 >= 0) or (c1 <= 0 and c2 <= 0)
+
+    def _track(self, pos, gp, last):
+        """The pointer moved to pos (local) inside this menu."""
+        if self.scrollable():
+            v = self._view()
+            d = -1 if pos.y() < v.top() else 1 if pos.y() > v.bottom() else 0
+            if d and d != self._scroll_dir:
+                self._scroll_dir = d
+                self._scroller.start()
+            elif not d:
+                self._scroll_stop()
+        i = self._index_at(pos)
+        if i == self.hover:
+            if self.child is not None and i == self.child_row:
+                self._timer.stop()
+            return
+        if self.child is not None and i != self.child_row and last is not None and self._heading_to_child(last, gp):
+            self._pending = i            # keep the submenu while the pointer is on its way there
+            self._timer.start(self.SWITCH_DELAY)
+            return
+        self._set_hover(i)
+        if self.child is not None:
+            if i == self.child_row:
+                self._timer.stop()
+            else:
+                self._pending = i
+                self._timer.start(self.SWITCH_DELAY)
+        elif self._has_sub(i):
+            self._pending = i
+            self._timer.start(self.OPEN_DELAY)
+        else:
+            self._timer.stop()
+
+    def _switch_sub(self):
+        i = self._pending
+        if self.child is not None and i == self.child_row:
+            return
+        self._set_hover(i)
+        self._close_child()
+        if self._has_sub(i):
             self._open_sub(i)
 
-    def _open_sub(self, i):
-        if self.child is not None:
-            try:
-                self.child.close()
-            except RuntimeError:
-                pass
-            self.child = None
-        if i < 0:
+    def mouseMoveEvent(self, e):
+        root = self._root()
+        if root is not self:
+            return root.mouseMoveEvent(e)
+        gp = e.globalPos()
+        if not self._armed and self._start is not None and \
+                (gp - self._start).manhattanLength() > QApplication.startDragDistance():
+            self._armed = True
+        chain = self._chain()
+        m = self._menu_at(gp)
+        for menu in chain:
+            if menu is not m:
+                menu._scroll_stop()
+        if m is None:
+            # outside every menu: open submenus stay, nothing else is highlighted
+            for menu in chain:
+                menu._timer.stop()
+                menu._set_hover(menu.child_row if menu.child is not None else -1)
+        else:
+            for menu in chain[:chain.index(m)]:
+                menu._timer.stop()
+                menu._set_hover(menu.child_row)
+            m._track(m.mapFromGlobal(gp), gp, self._last)
+        self._last = gp
+
+    def mousePressEvent(self, e):
+        root = self._root()
+        if root is not self:
+            return root.mousePressEvent(e)
+        gp = e.globalPos()
+        m = self._menu_at(gp)
+        if m is None:
+            self.close()
             return
-        it = self.items[i]
-        if it.submenu and it.enabled:
-            items = it.submenu() if callable(it.submenu) else it.submenu
-            sub = PopupMenu(items, self.parentWidget(), check_right=True)
-            sub.parent_menu = self
-            r = self._row_rects()[i]
-            gp = self.mapToGlobal(QPoint(int(r.right()) + 10, int(r.top()) - self.PAD))
-            sub.setWindowFlags(Qt.ToolTip | Qt.FramelessWindowHint)
-            sub.setAttribute(Qt.WA_TranslucentBackground)
-            sub.popup(gp)
-            self.child = sub
+        self._armed = True
+        i = m._index_at(m.mapFromGlobal(gp))
+        if m._has_sub(i) and m.child_row != i:
+            m._timer.stop()
+            m._set_hover(i)
+            m._open_sub(i)
 
     def mouseReleaseEvent(self, e):
-        if not self.rect().contains(e.pos()):
+        root = self._root()
+        if root is not self:
+            return root.mouseReleaseEvent(e)
+        gp = e.globalPos()
+        m = self._menu_at(gp)
+        if m is None or not self._armed:
             return
-        i = self._index_at(e.pos())
-        if i < 0:
+        i = m._index_at(m.mapFromGlobal(gp))
+        if i < 0 or not m.items[i].enabled:
             return
-        it = self.items[i]
-        if not it.enabled or it.submenu:
+        it = m.items[i]
+        if it.submenu:
+            if m.child_row != i:
+                m._timer.stop()
+                m._set_hover(i)
+                m._open_sub(i)
             return
-        self._activate(it)
+        m._activate(it)
+
+    def wheelEvent(self, e):
+        root = self._root()
+        if root is not self:
+            return root.wheelEvent(e)
+        m = self._menu_at(e.globalPosition().toPoint())
+        if m is not None and m.scrollable():
+            steps = e.angleDelta().y() / 120
+            m._scroll_by(int(-steps * m.ROW) or (-1 if steps > 0 else 1))
 
     def _activate(self, it):
-        root = self
-        while root.parent_menu is not None:
-            root = root.parent_menu
-        root.close()
+        self._root().close()
         if it.callback:
             QTimer.singleShot(0, it.callback)
 
+    # ------------------------------------------------------------------ keyboard
     def keyPressEvent(self, e):
+        root = self._root()
+        if root is not self:
+            return root.keyPressEvent(e)
+        chain = self._chain()
+        m = chain[-1]                # like Qt, an open submenu takes the keys
         k = e.key()
-        selectable = [i for i, it in enumerate(self.items) if not it.separator and it.enabled]
-        if not selectable:
-            return super().keyPressEvent(e)
+        sel = m._selectable()
         if k in (Qt.Key_Down, Qt.Key_Up):
-            if self.hover not in selectable:
-                self.hover = selectable[0] if k == Qt.Key_Down else selectable[-1]
+            if not sel:
+                return
+            m._timer.stop()
+            m._close_child()
+            if m.hover not in sel:
+                nxt = sel[0] if k == Qt.Key_Down else sel[-1]
             else:
-                idx = selectable.index(self.hover) + (1 if k == Qt.Key_Down else -1)
-                self.hover = selectable[idx % len(selectable)]
-            self.update()
-        elif k in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space) and self.hover >= 0:
-            it = self.items[self.hover]
+                nxt = sel[(sel.index(m.hover) + (1 if k == Qt.Key_Down else -1)) % len(sel)]
+            m._set_hover(nxt)
+            m._ensure_visible(nxt)
+        elif k in (Qt.Key_Right, Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            if m.hover not in sel:
+                return
+            it = m.items[m.hover]
             if it.submenu:
-                self._open_sub(self.hover)
-            else:
-                self._activate(it)
-        elif k == Qt.Key_Right and self.hover >= 0 and self.items[self.hover].submenu:
-            self._open_sub(self.hover)
-        elif k in (Qt.Key_Escape, Qt.Key_Left):
-            self.close()
+                m._timer.stop()
+                if m.child_row != m.hover:
+                    m._open_sub(m.hover)
+                if m.child is not None:
+                    s = m.child._selectable()
+                    if s:
+                        m.child._set_hover(s[0])
+            elif k != Qt.Key_Right:
+                m._activate(it)
+        elif k in (Qt.Key_Left, Qt.Key_Escape):
+            if m is not self:
+                m.parent_menu._close_child()
+            elif k == Qt.Key_Escape:
+                self.close()
         else:
             super().keyPressEvent(e)
 
+    # ------------------------------------------------------------------ closing
+    def hideEvent(self, e):
+        self._timer.stop()
+        self._scroll_stop()
+        self._close_child()
+        super().hideEvent(e)
+
     def closeEvent(self, e):
-        if self.child is not None:
-            try:
-                self.child.close()
-            except RuntimeError:
-                pass
+        self._timer.stop()
+        self._scroll_stop()
+        self._close_child()
+        p = self.parent_menu
+        if p is not None and p.child is self:
+            p.child, p.child_row = None, -1
         if self.closed_callback:
             cb, self.closed_callback = self.closed_callback, None
             QTimer.singleShot(0, cb)
         super().closeEvent(e)
-
-    def mousePressEvent(self, e):
-        if not self.card().contains(QPointF(e.pos())):
-            # click outside: Qt.Popup closes itself; also close the chain
-            root = self
-            while root.parent_menu is not None:
-                root = root.parent_menu
-            root.close()
-            return
-        super().mousePressEvent(e)
 
 
 class Dropdown(QWidget):
@@ -1302,7 +1634,7 @@ class Dropdown(QWidget):
         menu.closed_callback = self._closed
         self._open = True
         self.update()
-        menu.popup(self.mapToGlobal(QPoint(2, self.height() + 2)))
+        menu.popup(self.mapToGlobal(QPoint(2, self.height() + 2)), flip_y=self.mapToGlobal(QPoint(0, -2)).y())
 
     def _closed(self):
         self._open = False

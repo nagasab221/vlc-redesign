@@ -15,7 +15,7 @@ from PyQt5.QtGui import QColor, QCursor, QIcon, QKeySequence, QPainter, QPixmap
 from PyQt5.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QInputDialog, QMenu, QShortcut,
                              QStackedWidget, QSystemTrayIcon, QVBoxLayout, QWidget)
 
-from . import APP_NAME, icons, prefs, theme
+from . import APP_NAME, icons, prefs, theme, wm
 from .actions import ACTION, ACTIONS, WINDOW_WIDE
 from .controls import SeekPreview, TitleBar
 from .dialogs import (AboutDialog, AddSubtitlesDialog, CaptureDialog, ConvertDialog, DiscDialog, MessageDialog,
@@ -133,6 +133,7 @@ class MainWindow(QWidget):
             surf.clicked.connect(self._surface_click)
             surf.doubleClicked.connect(self._surface_double)
             surf.wheeled.connect(self._surface_wheel)
+            surf.middleClicked.connect(self._surface_middle)
             surf.moved.connect(self._surface_moved)
             surf.contextMenu.connect(self.open_context_menu)
 
@@ -748,7 +749,7 @@ class MainWindow(QWidget):
             if self.isFullScreen():
                 self.exit_fullscreen()
             self.pip = PipWindow(self)
-            self.pip.start_move = lambda p=self.pip: p.windowHandle().startSystemMove()
+            self.pip.start_move = lambda p=self.pip: wm.start(p)
             self._place_video()
             self._update_surface()
             self.showMinimized() if self.mode == "player" else None
@@ -963,11 +964,24 @@ class MainWindow(QWidget):
         self.close_panels() if self.open_panel is not None and a == "Nothing" else None
 
     def _surface_double(self):
+        if self.pip is not None:
+            return                      # in picture in picture a double click just goes back (PipWindow)
         a = self.store.get("dblclick_action")
         if a == "Toggle fullscreen":
             self.toggle_fullscreen()
         elif a == "Play / Pause":
             self.engine.toggle()
+
+    def _surface_middle(self):
+        # VLC: the middle button shows or hides the fullscreen controls
+        if self.pip is None and self.overlay_mode():
+            if any(o.isVisible() for o in self._fs_bars.values()):
+                self._hide_overlays(force=True)
+            else:
+                self.show_overlay_bars()
+
+    def video_drags_window(self):
+        return not self.titlebar.isVisible()
 
     def _surface_wheel(self, dx, dy):
         rev = -1 if self.store.get("reverse_scroll") else 1
@@ -998,7 +1012,7 @@ class MainWindow(QWidget):
 
     def start_move(self):
         if self.windowHandle() and not self.isFullScreen():
-            self.windowHandle().startSystemMove()
+            wm.start(self)
 
     def take_snapshot(self):
         path = self.engine.snapshot()
@@ -1562,6 +1576,9 @@ class MainWindow(QWidget):
             self._shortcuts.append(sc)
 
     def _run_action(self, aid, key=""):
+        if self.mode == "library" and key in ("Alt+Left", "Alt+Right"):
+            self.library.back() if key == "Alt+Left" else self.library.forward()
+            return
         method = ACTION[aid][4]
         self._last_key = key
         target, _, arg = method.partition(":")
@@ -1795,7 +1812,7 @@ class MainWindow(QWidget):
     def mousePressEvent(self, e):
         edges = self._edges(e.pos())
         if e.button() == Qt.LeftButton and edges and self.windowHandle():
-            self.windowHandle().startSystemResize(edges)
+            wm.start(self, edges)
 
     def leaveEvent(self, e):
         self.unsetCursor()

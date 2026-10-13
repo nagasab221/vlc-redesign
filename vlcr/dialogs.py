@@ -12,7 +12,7 @@ import time
 import webbrowser
 from pathlib import Path
 
-from PyQt5.QtCore import QPoint, QProcess, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtCore import QEvent, QPoint, QProcess, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QColor, QFontMetrics, QKeySequence, QPainter, QPen, QPixmap
 from PyQt5.QtNetwork import QNetworkAccessManager, QNetworkRequest
 from PyQt5.QtWidgets import (QApplication, QDialog, QFileDialog, QGridLayout, QHBoxLayout, QLineEdit, QPlainTextEdit,
@@ -89,6 +89,28 @@ class Dialog(QDialog):
     def accept_clicked(self):
         self.accept()
 
+    def keyPressEvent(self, e):
+        # Enter presses the dialog's main button (Save / Play / Convert…), as in any dialog
+        if e.key() in (Qt.Key_Return, Qt.Key_Enter) and not (e.modifiers() & ~Qt.KeypadModifier):
+            if not isinstance(QApplication.focusWidget(), QPlainTextEdit) and self.footer.isVisible() \
+                    and self.save.isVisible() and self.save.isEnabled():
+                self.accept_clicked()
+            return
+        super().keyPressEvent(e)
+
+    def _first_field(self):
+        """Put the cursor in the first text box (in tab order) when the dialog opens."""
+        fw = QApplication.focusWidget()
+        if isinstance(fw, (QLineEdit, QPlainTextEdit)) and self.isAncestorOf(fw):
+            return
+        w = self.nextInFocusChain()
+        while w is not None and w is not self:
+            if isinstance(w, (QLineEdit, QPlainTextEdit)) and w.isVisible() and w.isEnabled() \
+                    and not w.isReadOnly() and self.isAncestorOf(w):
+                w.setFocus()
+                return
+            w = w.nextInFocusChain()
+
     def head_height(self):
         return self.head.height()
 
@@ -117,6 +139,7 @@ class Dialog(QDialog):
             g = par.window().frameGeometry()
             self.move(g.center() - self.rect().center())
         super().showEvent(e)
+        QTimer.singleShot(0, self._first_field)
 
     def mousePressEvent(self, e):
         if e.button() == Qt.LeftButton and e.pos().y() < self.MARGIN + 50:
@@ -578,7 +601,7 @@ class KeyField(QWidget):
         if k in (Qt.Key_Backspace, Qt.Key_Delete) and not e.modifiers():
             self.seq = ""
         else:
-            mods = int(e.modifiers()) & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier)
+            mods = int(e.modifiers() & (Qt.ShiftModifier | Qt.ControlModifier | Qt.AltModifier | Qt.MetaModifier))
             self.seq = QKeySequence(mods | k).toString()
         self.capturing = False
         self.clearFocus()
@@ -717,8 +740,18 @@ class NetworkDialog(Dialog):
         self.body_lay.addWidget(self.name)
         self.body_lay.addStretch(1)
         self.urls.textChanged.connect(self._update)
+        self.urls.installEventFilter(self)
         self._update()
         self.net = QNetworkAccessManager(self)
+
+    def eventFilter(self, obj, ev):
+        # Enter opens (as in VLC); Shift+Enter starts another line for more links
+        if obj is self.urls and ev.type() == QEvent.KeyPress and ev.key() in (Qt.Key_Return, Qt.Key_Enter) \
+                and not ev.modifiers() & Qt.ShiftModifier:
+            if self.save.isEnabled():
+                self.accept_clicked()
+            return True
+        return super().eventFilter(obj, ev)
 
     def _update(self):
         self.save.setEnabled(bool(self.urls.toPlainText().strip()))

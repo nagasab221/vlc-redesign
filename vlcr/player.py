@@ -19,6 +19,7 @@ class Surface(QFrame):
     """Mouse handling shared by the video and the music view."""
     clicked = pyqtSignal()
     doubleClicked = pyqtSignal()
+    middleClicked = pyqtSignal()
     wheeled = pyqtSignal(int, int)        # dx, dy steps
     moved = pyqtSignal(QPoint)            # global position
     contextMenu = pyqtSignal(QPoint)
@@ -35,6 +36,8 @@ class Surface(QFrame):
             self._press = e.globalPos()
         elif e.button() == Qt.RightButton:
             self.contextMenu.emit(e.globalPos())
+        elif e.button() == Qt.MiddleButton:
+            self.middleClicked.emit()
 
     def mouseReleaseEvent(self, e):
         if e.button() == Qt.LeftButton and self._press is not None:
@@ -46,19 +49,25 @@ class Surface(QFrame):
         if e.button() == Qt.LeftButton:
             self._click.stop()
             self.doubleClicked.emit()
+        else:
+            self.mousePressEvent(e)     # a quick second middle/right click is still a click
 
     def mouseMoveEvent(self, e):
         self.moved.emit(e.globalPos())
         if self._press is not None and (e.globalPos() - self._press).manhattanLength() > 8:
             self._press = None
             self._click.stop()
+            # Dragging moves the window only where there's no title bar to drag instead
+            # (picture in picture, hidden interface). Otherwise it does nothing, like VLC.
             w = self.window()
-            if hasattr(w, "start_move") and not w.isFullScreen():
+            if hasattr(w, "start_move") and not w.isFullScreen() and getattr(w, "video_drags_window", lambda: True)():
                 w.start_move()
 
     def wheelEvent(self, e):
+        # Qt's horizontal delta is positive towards the left; flip it so scrolling right is +1
         d = e.angleDelta()
-        self.wheeled.emit(int(d.x() / 120) if abs(d.x()) >= 120 else (1 if d.x() > 0 else -1 if d.x() < 0 else 0),
+        dx = -d.x()
+        self.wheeled.emit(int(dx / 120) if abs(dx) >= 120 else (1 if dx > 0 else -1 if dx < 0 else 0),
                           int(d.y() / 120) if abs(d.y()) >= 120 else (1 if d.y() > 0 else -1 if d.y() < 0 else 0))
 
 

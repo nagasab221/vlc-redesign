@@ -394,7 +394,7 @@ class PipWindow(QWidget):
         self.lay.setContentsMargins(0, 0, 0, 0)
         self.setStyleSheet("background: #000000;")
         self.video = None
-        screen = QApplication.primaryScreen().availableGeometry()
+        screen = (win.screen() or QApplication.primaryScreen()).availableGeometry()   # the player's monitor
         w = 480
         h = 270
         self.setGeometry(screen.right() - w - 24, screen.bottom() - h - 24, w, h)

@@ -66,7 +66,7 @@ ASPECTS = ["Automatic", "16:9", "4:3", "1:1", "16:10", "2.21:1", "2.35:1", "2.39
 CROPS = ["None", "16:9", "4:3", "1:1", "16:10", "2.21:1", "2.35:1", "2.39:1", "5:4"]
 ZOOMS = ["Fit", "1:4 Quarter", "1:2 Half", "1:1 Original", "2:1 Double"]
 FUZZY = ["Off", "Any title", "Contains title", "Title with extra characters", "Exact title match"]
-CLICK_ACTIONS = ["Play / Pause", "Show controls", "Toggle fullscreen", "Nothing"]
+CLICK_ACTIONS = ["Nothing", "Play / Pause", "Show controls", "Toggle fullscreen"]
 DBL_ACTIONS = ["Toggle fullscreen", "Play / Pause", "Nothing"]
 WHEEL_ACTIONS = ["Volume", "Seek", "Nothing"]
 
@@ -221,12 +221,12 @@ CATEGORIES = [
             Row("skip_vshort", "Very short skip", "number", 3, min=1, max=60, suffix=" s",
                 info="Shift+Left / Shift+Right."),
             Row("skip_short", "Short skip", "number", 10, min=1, max=600, suffix=" s",
-                info="Left / Right, and the 10-second buttons."),
+                info="Left / Right or Alt+Left / Alt+Right, and the 10-second buttons."),
             Row("skip_medium", "Medium skip", "number", 60, min=1, max=3600, suffix=" s", info="Ctrl+Left / Ctrl+Right."),
-            Row("skip_long", "Long skip", "number", 300, min=1, max=7200, suffix=" s", info="Alt+Left / Alt+Right."),
+            Row("skip_long", "Long skip", "number", 300, min=1, max=7200, suffix=" s", info="Ctrl+Alt+Left / Ctrl+Alt+Right."),
         ]),
         Section("Mouse", [
-            Row("click_action", "Single click on the video", "dropdown", "Play / Pause", options=CLICK_ACTIONS),
+            Row("click_action", "Single click on the video", "dropdown", "Nothing", options=CLICK_ACTIONS),
             Row("dblclick_action", "Double click on the video", "dropdown", "Toggle fullscreen", options=DBL_ACTIONS),
             Row("wheel_action", "Scroll wheel", "dropdown", "Volume", options=WHEEL_ACTIONS),
             Row("hwheel_action", "Horizontal scroll", "dropdown", "Seek", options=WHEEL_ACTIONS),

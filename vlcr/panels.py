@@ -7,7 +7,7 @@
 
 import os
 
-from PyQt5.QtCore import QPoint, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QPoint, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFontMetrics, QPainter, QPainterPath
 from PyQt5.QtWidgets import (QAbstractItemView, QFileDialog, QToolTip, QHBoxLayout, QInputDialog, QListWidget,
                              QListWidgetItem, QScrollArea, QStackedWidget, QStyledItemDelegate, QVBoxLayout, QWidget)
@@ -16,7 +16,7 @@ from . import icons, prefs, theme
 from .engine import SLEEP_OPTIONS, STEREO_MODES, display_name, fmt_ms, fmt_short, fmt_total, is_url
 from .theme import c
 from .widgets import (Button, ColorField, Dropdown, Expander, HLine, IconButton, Label, MenuItem, NumberField,
-                      PopupMenu, Segmented, Slider, Tabs, Toggle, VSlider, clear_layout, elide, sep)
+                      PopupMenu, Segmented, Slider, Tabs, Toggle, VSlider, clear_layout, elide, sep, wants_list_key)
 from .filedialog import FileDialog
 
 PANEL_W = 400
@@ -369,6 +369,11 @@ class SettingsPanel(Panel):
     def _set(self, key, value):
         self.engine.set_fx(key, value)
 
+    def _update_sub_note(self, *_):
+        note = self.engine.sub_style_note()
+        self.sub_note.setText(note)
+        self.sub_note.setVisible(bool(note))
+
     def toggle_row(self, form, label, key):
         t = Toggle()
         t.toggled.connect(lambda on, k=key: self._set(k, on))
@@ -676,6 +681,10 @@ class SettingsPanel(Panel):
         f.line()
         f.header("Appearance")
         self.toggle_row(f, "Embedded Sub Format", "sub_embedded_format")
+        self.sub_note = f.widget(Label("", 13, "text_3", wrap=True))
+        self.sub_note.hide()
+        for sig in (self.engine.tracksChanged, self.engine.mediaChanged, self.engine.fxChanged):
+            sig.connect(self._update_sub_note)
         font = Dropdown(self.win.font_families(), self.engine.fx["sub_font"] or "", height=32, placeholder="System")
         font.changed.connect(lambda v: self._set("sub_font", v))
         self._bind("sub_font", font.set_value)
@@ -899,6 +908,12 @@ class QueueList(QListWidget):
         self.setVerticalScrollMode(QAbstractItemView.ScrollPerPixel)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.viewport().setAutoFillBackground(False)
+
+    def event(self, e):
+        if e.type() == QEvent.ShortcutOverride and wants_list_key(e):
+            e.accept()
+            return True
+        return super().event(e)
 
     def dragEnterEvent(self, e):
         if e.source() is self or e.mimeData().hasUrls() or e.mimeData().hasFormat("application/x-vlcr-items"):
