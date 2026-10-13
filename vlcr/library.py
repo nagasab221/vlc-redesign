@@ -485,6 +485,9 @@ class LibraryModel(QObject):
 
 
 # --- painting entries ---------------------------------------------------------------------
+LIB_SIZES = {"Large": 1.0, "Medium": 0.8, "Small": 0.64}
+
+
 class EntryDelegate(QStyledItemDelegate):
     """Paints entries as compact rows (32 px thumbs) or as cards (grid)."""
 
@@ -493,18 +496,30 @@ class EntryDelegate(QStyledItemDelegate):
         self.view = view
         self.mode = mode          # row | card | square | tile | listcol
 
+    @staticmethod
+    def card_size(scale, square):
+        """(thumb width, thumb height, text block height) of a card at a library size."""
+        if square:
+            return round(200 * scale), round(200 * scale), round(68 * scale)
+        return round(316 * scale), round(178 * scale), round(59 * scale)
+
+    @staticmethod
+    def row_height(scale):
+        return round(42 * (1 + scale) / 2)     # rows shrink less than cards
+
     def sizeHint(self, option, index):
         e = index.data(Qt.UserRole)
+        s = self.view.lib.scale()
         if self.mode == "card":
-            if e and (e.get("square") or e["kind"] in ("folder", "category", "album", "artist", "genre", "playlist",
-                                                         "favorites", "add", "netlist", "podcast")):
-                return QSize(200 + 20, 200 + 20 + 68)
-            return QSize(316 + 20, 178 + 20 + 39 + 20)
+            square = bool(e and (e.get("square") or e["kind"] in ("folder", "category", "album", "artist", "genre",
+                                                                  "playlist", "favorites", "add", "netlist", "podcast")))
+            tw, th, text_h = self.card_size(s, square)
+            return QSize(tw + 20, th + 20 + text_h)
         if self.mode == "listcol":
-            return QSize(self.view.col_width(), 42)
+            return QSize(self.view.col_width(), self.row_height(s))
         if e and e["kind"] == "header":
-            return QSize(option.rect.width(), 44)
-        return QSize(option.rect.width(), 42)
+            return QSize(option.rect.width(), self.row_height(s) + 2)
+        return QSize(option.rect.width(), self.row_height(s))
 
     def paint(self, p, option, index):
         e = index.data(Qt.UserRole)
@@ -619,7 +634,8 @@ class EntryDelegate(QStyledItemDelegate):
     def _card(self, p, r, e, hover, sel):
         square = e.get("square") or e["kind"] in ("folder", "category", "album", "artist", "genre", "playlist",
                                                   "favorites", "add", "netlist", "podcast")
-        tw, th = (200, 200) if square else (316, 178)
+        s = self.view.lib.scale()
+        tw, th, _ = self.card_size(s, square)
         box = QRectF(r.left() + 10, r.top() + 10, tw, th)
         playing, watched, prog = self._state(e)
         path = QPainterPath()
@@ -651,14 +667,16 @@ class EntryDelegate(QStyledItemDelegate):
             p.setClipping(False)
         if watched and not playing:
             p.setOpacity(theme.T.p["dim"] + 0.15)
-        f = theme.font(16)
+        f = theme.font(max(12, round(16 * (1 + s) / 2)))
         p.setFont(f)
         p.setPen(c("accent") if playing else c("text"))
-        ty = box.bottom() + 20
-        p.drawText(QRectF(box.left(), ty, tw, 20), Qt.AlignLeft | Qt.AlignVCenter, elide(e["name"], f, tw))
+        ty = box.bottom() + round(20 * s)
+        lh = max(18, round(20 * s))
+        p.drawText(QRectF(box.left(), ty, tw, lh), Qt.AlignLeft | Qt.AlignVCenter, elide(e["name"], f, tw))
         if e.get("sub") and square:
             p.setPen(c("text_2"))
-            p.drawText(QRectF(box.left(), ty + 29, tw, 20), Qt.AlignLeft | Qt.AlignVCenter, elide(e["sub"], f, tw))
+            p.drawText(QRectF(box.left(), ty + round(29 * s), tw, lh), Qt.AlignLeft | Qt.AlignVCenter,
+                       elide(e["sub"], f, tw))
         p.setOpacity(1)
 
 
@@ -740,10 +758,27 @@ class EntryView(QListWidget):
             return True
         return super().event(e)
 
+    def updateGeometries(self):
+        super().updateGeometries()
+        # Qt steps a grid by a whole row of cards per wheel line (3 rows a notch); use ~120 px
+        self.verticalScrollBar().setSingleStep(40)
+        self.horizontalScrollBar().setSingleStep(40)
+
     def wheelEvent(self, e):
-        if self.flow() == QListView.LeftToRight and not self.isWrapping() and not e.angleDelta().x():
+        d = e.angleDelta()
+        if e.modifiers() & Qt.ControlModifier:
+            if d.y():
+                self.lib.zoom(1 if d.y() > 0 else -1)
+            e.accept()
+            return
+        if self.flow() == QListView.LeftToRight and not self.isWrapping():
+            # A home-page row: the wheel scrolls the page; sideways scrolling (or Shift+wheel) moves the row.
+            dx = d.x() or (d.y() if e.modifiers() & Qt.ShiftModifier else 0)
+            if not dx:
+                e.ignore()
+                return
             bar = self.horizontalScrollBar()
-            bar.setValue(bar.value() - e.angleDelta().y())
+            bar.setValue(bar.value() - dx)
             e.accept()
             return
         super().wheelEvent(e)
@@ -815,6 +850,24 @@ class Library(QObject):
 
     def page_key(self):
         return "/".join(str(x) for x in self.loc[:2])
+
+    def size_name(self):
+        name = self.store["lib_size"]
+        return name if name in LIB_SIZES else "Large"
+
+    def scale(self):
+        return LIB_SIZES[self.size_name()]
+
+    def set_size(self, name):
+        if name in LIB_SIZES and name != self.size_name():
+            self.store["lib_size"] = name
+            self.locationChanged.emit()
+
+    def zoom(self, step):
+        """Ctrl+wheel in the library: one size bigger (step 1) or smaller (-1)."""
+        names = list(LIB_SIZES)
+        i = names.index(self.size_name()) - step
+        self.set_size(names[max(0, min(len(names) - 1, i))])
 
     def view_mode(self, default="grid"):
         return self.store.view(self.page_key(), "view", default)
@@ -1100,10 +1153,14 @@ class Library(QObject):
 
     def view_menu(self, anchor, default="grid"):
         cur = self.view_mode(default)
+        size = self.size_name()
         items = [MenuItem("Grid View", lambda: self.set_view_mode("grid"), icon="grid", icon_variant="",
                           checked=cur == "grid"),
                  MenuItem("List View", lambda: self.set_view_mode("list"), icon="list", icon_variant="",
-                          checked=cur == "list")]
+                          checked=cur == "list"),
+                 sep()]
+        items += [MenuItem(f"{n} Items", lambda n=n: self.set_size(n), checked=n == size,
+                           shortcut="Ctrl+Scroll" if n == "Large" else "") for n in LIB_SIZES]
         PopupMenu(items, self.win, width=257).popup_below(anchor)
 
     def add_item_menu(self, anchor, below=False):
@@ -1526,6 +1583,21 @@ class LibrarySidebar(QWidget):
         p.drawRoundedRect(QRectF(self.card.geometry()), 6, 6)
 
 
+class HomeScroll(QScrollArea):
+    def __init__(self, lib):
+        super().__init__()
+        self.lib = lib
+        self.verticalScrollBar().setSingleStep(40)
+
+    def wheelEvent(self, e):
+        if e.modifiers() & Qt.ControlModifier:
+            if e.angleDelta().y():
+                self.lib.zoom(1 if e.angleDelta().y() > 0 else -1)
+            e.accept()
+            return
+        super().wheelEvent(e)
+
+
 class HomeSection(QWidget):
     def __init__(self, lib, title, more_loc, entries, style):
         super().__init__()
@@ -1535,7 +1607,8 @@ class HomeSection(QWidget):
         v.setSpacing(0)
         head = QHBoxLayout()
         head.setSpacing(5)
-        t = Label(title, 20, "text")
+        s = lib.scale()
+        t = Label(title, round(20 * (1 + s) / 2), "text")
         t.setCursor(Qt.PointingHandCursor)
         t.mousePressEvent = lambda e: lib.navigate(more_loc)
         head.addWidget(t)
@@ -1547,11 +1620,11 @@ class HomeSection(QWidget):
         v.addSpacing(10)
         if style == "list":
             view = EntryView(lib, "listcol")
-            view.setFixedHeight(42 * ((len(entries) + 3) // 4) + 8)
+            view.setFixedHeight(EntryDelegate.row_height(s) * ((len(entries) + 3) // 4) + 8)
         else:
             view = EntryView(lib, "card", horizontal=True)
-            square = style in ("square", "folder")
-            view.setFixedHeight((200 + 20 + 68 if square else 178 + 20 + 59) + 12)
+            _, th, text_h = EntryDelegate.card_size(s, style in ("square", "folder"))
+            view.setFixedHeight(th + 20 + text_h + 12)
         view.set_entries(entries)
         lib.media.thumbReady.connect(view.repaint_items)
         lib.media.infoReady.connect(view.repaint_items)
@@ -1648,7 +1721,7 @@ class LibraryContent(QWidget):
             for title, more, entries, style in sections:
                 iv.addWidget(HomeSection(lib, title, more, entries, style))
             iv.addStretch(1)
-            area = QScrollArea()
+            area = HomeScroll(lib)
             area.setWidgetResizable(True)
             area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
             area.setWidget(inner)
