@@ -74,6 +74,7 @@ class MiniOverlay(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating)
         self.mini = mini
         self.setMouseTracking(True)
+        self.setCursor(Qt.PointingHandCursor)       # the buttons, and a click anywhere opens the player
         self._timer = QTimer(self, interval=150, timeout=self._check)
 
     def show_over(self, rect):

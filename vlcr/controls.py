@@ -285,8 +285,9 @@ class Elements:
             w.clicked.connect(a.open_current_folder)
         elif eid in ("title", "file_name", "artist_name", "folder_name", "playlist_name"):
             w = TextElement(center=(where == "title_center"), max_width=900 if where == "title_center" else 360)
-            if eid == "title":
-                w.clicked.connect(a.show_properties) if where != "title_center" else None
+            if eid == "title" and where != "title_center":
+                w.clicked.connect(a.show_properties)
+                w.setCursor(Qt.PointingHandCursor)
         elif eid == "minimize":
             w = IconButton("minimize", "Minimize", box=(36, 24))
             w.clicked.connect(a.minimize)
