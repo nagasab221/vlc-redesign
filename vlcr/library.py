@@ -497,6 +497,11 @@ class EntryDelegate(QStyledItemDelegate):
         self.mode = mode          # row | card | square | tile | listcol
 
     @staticmethod
+    def is_square(e):
+        return bool(e and (e.get("square") or e["kind"] in ("folder", "category", "album", "artist", "genre",
+                                                            "playlist", "favorites", "add", "netlist", "podcast")))
+
+    @staticmethod
     def card_size(scale, square):
         """(thumb width, thumb height, text block height) of a card at a library size."""
         if square:
@@ -511,9 +516,7 @@ class EntryDelegate(QStyledItemDelegate):
         e = index.data(Qt.UserRole)
         s = self.view.lib.scale()
         if self.mode == "card":
-            square = bool(e and (e.get("square") or e["kind"] in ("folder", "category", "album", "artist", "genre",
-                                                                  "playlist", "favorites", "add", "netlist", "podcast")))
-            tw, th, text_h = self.card_size(s, square)
+            tw, th, text_h = self.card_size(s, self.is_square(e))
             return QSize(tw + 20, th + 20 + text_h)
         if self.mode == "listcol":
             return QSize(self.view.col_width(), self.row_height(s))
@@ -632,8 +635,7 @@ class EntryDelegate(QStyledItemDelegate):
         p.setOpacity(1)
 
     def _card(self, p, r, e, hover, sel):
-        square = e.get("square") or e["kind"] in ("folder", "category", "album", "artist", "genre", "playlist",
-                                                  "favorites", "add", "netlist", "podcast")
+        square = self.is_square(e)
         s = self.view.lib.scale()
         tw, th, _ = self.card_size(s, square)
         box = QRectF(r.left() + 10, r.top() + 10, tw, th)
@@ -733,6 +735,10 @@ class EntryView(QListWidget):
 
     def set_entries(self, entries):
         self.clear()
+        if self.mode == "card":
+            # Equal cell sizes only when every card has the same shape: on pages mixing videos
+            # and songs (Recent, Favorites, search) Qt would squeeze them all into one size.
+            self.setUniformItemSizes(len({EntryDelegate.is_square(e) for e in entries}) <= 1)
         for e in entries:
             it = QListWidgetItem(e["name"])
             it.setData(Qt.UserRole, e)
