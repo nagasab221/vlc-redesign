@@ -17,14 +17,19 @@ APPS="$DATA/applications"
 ICONS="$DATA/icons/hicolor/scalable/apps"
 BIN="$HOME/.local/bin"
 DESKTOP="$APPS/vlc-redesign.desktop"
+CLASSIC="$APPS/vlc.desktop"            # user copy of the stock VLC entry, renamed "VLC Classic"
+CLASSIC_MARK="# Renamed to VLC Classic by the VLC Redesign installer"
 
 remove() {
     rm -f "$BIN/vlc-redesign" "$DESKTOP" "$ICONS/vlc-redesign.svg"
+    if [[ -f "$CLASSIC" ]] && grep -qF "$CLASSIC_MARK" "$CLASSIC"; then
+        rm -f "$CLASSIC"
+    fi
     if [[ -f "$DEST/main.py" ]]; then
         rm -rf "$DEST"
     fi
     update-desktop-database -q "$APPS" 2>/dev/null || true
-    echo "VLC Redesign removed. Your settings are still in ~/.config/vlc-redesign if you want to delete them too."
+    echo "VLC Redesign removed (your normal VLC is called VLC again). Your settings are still in ~/.config/vlc-redesign if you want to delete them too."
 }
 
 install_packages() {
@@ -98,7 +103,7 @@ main() {
     cat > "$DESKTOP" <<DESKTOP
 [Desktop Entry]
 Type=Application
-Name=VLC Redesign
+Name=VLC
 GenericName=Media Player
 Comment=Play videos and music with the redesigned VLC interface
 Exec="$app/vlc-redesign" %U
@@ -110,10 +115,19 @@ Keywords=Player;Video;Audio;Music;Movie;VLC;
 StartupWMClass=vlc-redesign
 $mime
 DESKTOP
+    # Two "VLC"s in the menu would be confusing, so the stock one becomes "VLC Classic" (a copy in
+    # your own applications folder; the system file isn't touched and --remove takes it away).
+    local sys=/usr/share/applications/vlc.desktop
+    if [[ -f "$sys" ]] && { [[ ! -f "$CLASSIC" ]] || grep -qF "$CLASSIC_MARK" "$CLASSIC"; }; then
+        { echo "$CLASSIC_MARK"
+          sed -E -e 's/^Name(\[[^]]*\])?=.*/Name\1=VLC Classic/' \
+                 -e 's/^X-GNOME-FullName(\[[^]]*\])?=.*/X-GNOME-FullName\1=VLC Classic/' "$sys"; } > "$CLASSIC"
+    fi
+
     update-desktop-database -q "$APPS" 2>/dev/null || true
     gtk-update-icon-cache -q "$DATA/icons/hicolor" 2>/dev/null || true
 
-    echo "Done. Open \"VLC Redesign\" from the menu, or right click a video > Open With."
+    echo "Done. Open \"VLC\" from the menu (your old one is now \"VLC Classic\"), or right click a video > Open With."
 }
 
 main "$@"

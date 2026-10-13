@@ -14,8 +14,9 @@ curl -fsSL https://raw.githubusercontent.com/nagasab221/vlc-redesign/main/instal
 ```
 
 Made on Linux Mint, should work on Ubuntu and Debian too. If you're missing VLC, PyQt5 or ffmpeg it installs them
-(that's the only part that asks for your password). After that it's in the menu as VLC Redesign and under Open With
-when you right click a video. It doesn't change your default player.
+(that's the only part that asks for your password). After that it's in the menu as VLC and under Open With when you
+right click a video, and your normal VLC shows up as VLC Classic so you can tell them apart. It doesn't change your
+default player.
 
 Run the same command again to update. You can also clone the repo and run `./install.sh`, which runs it straight
 from the clone.

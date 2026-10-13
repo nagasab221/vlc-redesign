@@ -686,7 +686,7 @@ class Engine(QObject):
             self.error.emit("libVLC rejected some options; they were ignored.")
         self._args = args
         try:
-            self.instance.set_user_agent("VLC Redesign", "VLCRedesign/0.2 LibVLC/3.0")
+            self.instance.set_user_agent("VLC", "VLCRedesign/0.2 LibVLC/3.0")
             self.instance.set_app_id("vlc-redesign", "0.2", "vlc")
         except Exception:
             pass
@@ -778,6 +778,8 @@ class Engine(QObject):
             self._set_embedded_format(bool(value))
         elif key in INSTANCE_FX:
             self.schedule_rebuild()
+            if key == "stereo_mode":
+                self._apply_runtime()       # Left/Right/… are runtime; only Mono needs the rebuild
         elif key.startswith("eq_"):
             self._apply_eq()
         elif key == "audio_delay":
@@ -903,10 +905,14 @@ class Engine(QObject):
                     "Mean": "mean", "X": "x", "Yadif": "yadif", "Yadif (2x)": "yadif2x", "Phosphor": "phosphor",
                     "Film NTSC (IVTC)": "ivtc"}.get(mode, "yadif")
             mp.video_set_deinterlace(name)
-        # audio channels
-        ch = CHANNELS.get(fx["stereo_mode"])
-        if ch and self.is_active():
-            mp.audio_set_channel(ch)
+        # audio channels: only when it actually changes. Setting the stereo mode, even to the
+        # value it already has, makes libVLC rebuild the audio output (a new PulseAudio/PipeWire
+        # stream); doing that as a movie starts could leave it silent. "Stereo" = as the file is.
+        ch = CHANNELS.get(fx["stereo_mode"], CHANNELS["Stereo"])     # Mono is an audio filter instead
+        if self.is_active():
+            cur = mp.audio_get_channel()
+            if cur != ch and not (ch == CHANNELS["Stereo"] and cur in (0, CHANNELS["Stereo"])):
+                mp.audio_set_channel(ch)
 
     # --- queries ---------------------------------------------------------------
     @property
