@@ -44,6 +44,7 @@ class MainWindow(QWidget):
         self.setWindowIcon(QIcon(icons.pixmap("vlc", 128, dpr=1.0)))
         self.setAcceptDrops(True)
         self.setMouseTracking(True)
+        QApplication.instance().installEventFilter(self)     # see eventFilter: the edge cursor
         self.setMinimumSize(560, 360)
         self.mode = "player"
         self.hide_ui = False
@@ -1805,6 +1806,7 @@ class MainWindow(QWidget):
 
     def mouseMoveEvent(self, e):
         edges = self._edges(e.pos())
+        self._edge_cursor = bool(edges)
         if edges in (Qt.LeftEdge | Qt.TopEdge, Qt.RightEdge | Qt.BottomEdge):
             self.setCursor(Qt.SizeFDiagCursor)
         elif edges in (Qt.RightEdge | Qt.TopEdge, Qt.LeftEdge | Qt.BottomEdge):
@@ -1822,7 +1824,18 @@ class MainWindow(QWidget):
             wm.start(self, edges)
 
     def leaveEvent(self, e):
+        self._edge_cursor = False
         self.unsetCursor()
+
+    def eventFilter(self, obj, ev):
+        # The resize cursor is set while the pointer is on our edge. Moving on into the window
+        # only sends events to the widget it enters, so drop the cursor there; otherwise every
+        # child kept showing it until a click.
+        if ev.type() == QEvent.Enter and getattr(self, "_edge_cursor", False) and obj is not self \
+                and isinstance(obj, QWidget) and self.isAncestorOf(obj):
+            self._edge_cursor = False
+            self.unsetCursor()
+        return False
 
     def paintEvent(self, e):
         p = QPainter(self)

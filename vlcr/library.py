@@ -775,6 +775,20 @@ class EntryView(QListWidget):
             return True
         return super().event(e)
 
+    def mouseMoveEvent(self, e):
+        # the hand over anything that opens or plays on click
+        it = self.itemAt(e.pos())
+        hand = it is not None and (it.data(Qt.UserRole) or {}).get("kind") != "empty"
+        if hand != getattr(self, "_hand", False):
+            self._hand = hand
+            self.viewport().setCursor(Qt.PointingHandCursor) if hand else self.viewport().unsetCursor()
+        super().mouseMoveEvent(e)
+
+    def leaveEvent(self, e):
+        self._hand = False
+        self.viewport().unsetCursor()
+        super().leaveEvent(e)
+
     def updateGeometries(self):
         super().updateGeometries()
         # Qt steps a grid by a whole row of cards per wheel line (3 rows a notch); use ~120 px
